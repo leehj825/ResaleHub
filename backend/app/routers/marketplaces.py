@@ -147,30 +147,104 @@ def ebay_connect(current_user: User = Depends(get_current_user)):
     return {"auth_url": auth_url}
 
 
-# ============================================================
-#                (신규) eBay OAuth: Step 2 (callback)
-# ============================================================
+#from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session
+from datetime import datetime
+
+from app.core.config import get_settings
+from app.core.database import get_db
+from app.models.user import User
+from app.models.marketplace_account import MarketplaceAccount
+
+# ... 위쪽 생략 ...
+settings = get_settings()
+
 @router.get("/ebay/oauth/callback")
 async def ebay_oauth_callback(
     request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    eBay OAuth redirect callback
-    지금은 테스트용: 받은 code/state를 그대로 돌려줌.
+    eBay에서 redirect 될 때 콜백 URL
+
+    - 쿼리의 state(=user id) 를 읽고
+    - 그 유저의 MarketplaceAccount(ebay)를 생성/업데이트
+    - 간단한 HTML을 돌려서 브라우저 탭 닫기
     """
     code = request.query_params.get("code")
     state = request.query_params.get("state")
 
     if not code:
         raise HTTPException(status_code=400, detail="Missing 'code' in callback")
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing 'state' in callback")
 
-    # 나중에:
-    # - code -> access token 교환
-    # - MarketplaceAccount 저장
-    # 지금은 테스트용 정보만 반환
+    # 우리는 /ebay/connect 에서 state=current_user.id 로 보냈음
+    try:
+        user_id = int(state)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid state")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Unknown user")
+
+    # 👉 지금은 token 교환은 생략하고, "연결됨" 플래그 용으로만 저장
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "ebay",
+        )
+        .first()
+    )
+
+    if not account:
+        account = MarketplaceAccount(
+            user_id=user.id,
+            marketplace="ebay",
+            username=None,        # 나중에 eBay user id 넣을 수 있음
+            access_token=None,    # 나중에 실제 토큰 저장
+            refresh_token=None,
+            token_expires_at=None,
+        )
+        db.add(account)
+    else:
+        # 기존 계정이 있으면 업데이트 시간만 갱신
+        account.updated_at = datetime.utcnow()
+
+    db.commit()
+
+    # 브라우저 탭 닫아주는 간단 HTML
+    html = """
+    <html>
+      <body>
+        <p>eBay sandbox 연결이 완료되었습니다. 이 창을 닫고 앱으로 돌아가 주세요.</p>
+        <script>
+          window.close();
+        </script>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+@router.get("/ebay/status")
+def ebay_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "ebay",
+        )
+        .first()
+    )
+
     return {
-        "message": "eBay OAuth callback received",
-        "state": state,
-        "code": code,
+        "connected": account is not None,
+        "marketplace": "ebay",
+        "username": account.username if account else None,
     }

@@ -15,7 +15,7 @@ class AuthService {
 
   String get baseUrl {
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'https://irc-suggested-adapters-murray.trycloudflare.com';
+      return 'https://sampling-sleeping-median-gcc.trycloudflare.com';
     } else {
       return 'http://127.0.0.1:8000';
     }
