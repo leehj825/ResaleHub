@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/auth_service.dart';
-import 'package:frontend/services/listing_service.dart';
+import 'package:frontend/services/listing_service.dart' as ls;
 import 'package:frontend/screens/edit_listing_screen.dart';
 
 class ListingDetailScreen extends StatefulWidget {
@@ -18,15 +18,21 @@ class ListingDetailScreen extends StatefulWidget {
 
 class _ListingDetailScreenState extends State<ListingDetailScreen> {
   final _authService = AuthService();
-  final _listingService = ListingService();
+  final _listingService = ls.ListingService(); // alias
 
   late Listing _listing;
   bool _deleting = false;
 
   // 여러 이미지용 상태
-  List<String> _imageUrls = [];     // "/media/..." 형태
+  List<String> _imageUrls = []; // "/media/..." 형태
   bool _loadingImages = true;
   String? _imageError;
+
+  // 상태 변경 중 여부
+  bool _updatingStatus = false;
+
+  // 사용 가능한 상태 목록
+  final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
   @override
   void initState() {
@@ -71,7 +77,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       setState(() {
         _listing = updated;
       });
-      // 수정 후 썸네일/이미지가 바뀌었을 수 있으니 다시 로드
+      // 수정 후 썸네일/이미지 바뀌었을 수 있으니 다시 로드
       _loadImages();
     }
   }
@@ -131,6 +137,39 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to delete image: $e')),
       );
+    }
+  }
+
+  /// 상태 변경 처리
+  Future<void> _changeStatus(String newStatus) async {
+    if (newStatus == _listing.status || _updatingStatus) return;
+
+    setState(() {
+      _updatingStatus = true;
+    });
+
+    try {
+      final updated = await _listingService.updateListing(
+        _listing.id,
+        status: newStatus,
+      );
+      if (!mounted) return;
+      setState(() {
+        _listing = updated;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Status updated to "$newStatus"')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update status: $e')),
+      );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _updatingStatus = false;
+      });
     }
   }
 
@@ -262,7 +301,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
             const SizedBox(height: 24),
 
-            // 제목 + 가격 + 상태
+            // 제목 + 가격
             Text(
               _listing.title,
               style: theme.textTheme.headlineSmall,
@@ -274,13 +313,46 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            const SizedBox(height: 4),
+
+            const SizedBox(height: 16),
+
+            // 🔻 상태 표시 + 변경 UI
             Text(
-              'Status: ${_listing.status}',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: Colors.grey.shade700,
-              ),
+              'Status',
+              style: theme.textTheme.titleMedium,
             ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: _statusOptions.map((status) {
+                final isSelected = _listing.status == status;
+                return ChoiceChip(
+                  label: Text(status),
+                  selected: isSelected,
+                  onSelected: _updatingStatus
+                      ? null
+                      : (selected) {
+                          if (selected) {
+                            _changeStatus(status);
+                          }
+                        },
+                );
+              }).toList(),
+            ),
+            if (_updatingStatus) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: const [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('Updating status...'),
+                ],
+              ),
+            ],
 
             const SizedBox(height: 24),
 

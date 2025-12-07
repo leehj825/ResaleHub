@@ -15,11 +15,17 @@ class ListingsScreen extends StatefulWidget {
 
 class _ListingsScreenState extends State<ListingsScreen> {
   final _listingService = ListingService();
-  final _authService = AuthService(); // baseUrl 여기서 가져옴
+  final _authService = AuthService();
 
   bool _loading = true;
   String? _error;
-  List<Listing> _listings = [];
+
+  List<Listing> _allListings = [];
+  List<Listing> _filteredListings = [];
+
+  String _searchQuery = '';
+  String _statusFilter = 'all'; // all / draft / listed / sold
+  String _sortOption = 'newest';
 
   @override
   void initState() {
@@ -36,8 +42,9 @@ class _ListingsScreenState extends State<ListingsScreen> {
       final items = await _listingService.getMyListings();
       if (!mounted) return;
       setState(() {
-        _listings = items;
+        _allListings = items;
       });
+      _applyFilters();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -45,9 +52,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
       });
     } finally {
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-      });
+      _loading = false;
     }
   }
 
@@ -57,19 +62,20 @@ class _ListingsScreenState extends State<ListingsScreen> {
     );
 
     if (created != null) {
-      _loadListings();
+      await _loadListings();
     }
   }
 
-  Future<void> _openDetail(Listing listing) async {
+  // --------------------------------
+  // 👉 Detail 화면으로 이동
+  // --------------------------------
+  Future<void> _openListingDetail(Listing listing) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ListingDetailScreen(listing: listing),
       ),
     );
-    // 상세 페이지에서 수정/삭제가 일어났을 수 있으니 돌아오면 새로고침
-    if (!mounted) return;
-    _loadListings();
+    await _loadListings();
   }
 
   Future<void> _deleteListing(Listing listing) async {
@@ -100,8 +106,9 @@ class _ListingsScreenState extends State<ListingsScreen> {
       await _listingService.deleteListing(listing.id);
       if (!mounted) return;
       setState(() {
-        _listings.removeWhere((l) => l.id == listing.id);
+        _allListings.removeWhere((l) => l.id == listing.id);
       });
+      _applyFilters();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -110,10 +117,66 @@ class _ListingsScreenState extends State<ListingsScreen> {
     }
   }
 
+  // --------------------------------
+  // 필터 + 정렬 적용
+  // --------------------------------
+  void _applyFilters() {
+    List<Listing> items = List<Listing>.from(_allListings);
+
+    // 검색어 적용
+    final q = _searchQuery.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      items = items.where((l) {
+        final title = l.title.toLowerCase();
+        final desc = (l.description ?? '').toLowerCase();
+        return title.contains(q) || desc.contains(q);
+      }).toList();
+    }
+
+    // 상태 필터
+    if (_statusFilter != 'all') {
+      items = items.where((l) => l.status == _statusFilter).toList();
+    }
+
+    // 정렬
+    switch (_sortOption) {
+      case 'price_asc':
+        items.sort((a, b) => a.price.compareTo(b.price));
+        break;
+      case 'price_desc':
+        items.sort((a, b) => b.price.compareTo(a.price));
+        break;
+      case 'newest':
+      default:
+        break;
+    }
+
+    setState(() {
+      _filteredListings = items;
+    });
+  }
+
+  void _onSearchChanged(String value) {
+    _searchQuery = value;
+    _applyFilters();
+  }
+
+  void _onStatusFilterChanged(String? value) {
+    if (value == null) return;
+    _statusFilter = value;
+    _applyFilters();
+  }
+
+  void _onSortOptionChanged(String? value) {
+    if (value == null) return;
+    _sortOption = value;
+    _applyFilters();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final baseUrl = _authService.baseUrl; // 여기서 baseUrl 확보
+    final baseUrl = _authService.baseUrl;
 
     return Scaffold(
       appBar: AppBar(
@@ -123,56 +186,133 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(child: Text('Error: $_error'))
-              : _listings.isEmpty
-                  ? const Center(child: Text('No listings yet.'))
-                  : ListView.builder(
-                      itemCount: _listings.length,
-                      itemBuilder: (context, index) {
-                        final item = _listings[index];
-
-                        // thumbnail_url → full URL
-                        String? thumbnailFullUrl;
-                        if (item.thumbnailUrl != null) {
-                          thumbnailFullUrl = '$baseUrl${item.thumbnailUrl}';
-                        }
-
-                        return Card(
-                          margin: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          child: ListTile(
-                            onTap: () => _openDetail(item), // 👈 탭 → 상세 화면
-                            leading: thumbnailFullUrl != null
-                                ? ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Image.network(
-                                      thumbnailFullUrl,
-                                      width: 56,
-                                      height: 56,
-                                      fit: BoxFit.cover,
-                                    ),
-                                  )
-                                : const Icon(
-                                    Icons.image_not_supported,
-                                    size: 40,
-                                  ),
-                            title: Text(item.title),
-                            subtitle: Text(
-                              '${item.price.toStringAsFixed(2)} ${item.currency} • ${item.status}',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                color: Colors.redAccent,
-                              ),
-                              onPressed: () => _deleteListing(item),
-                            ),
-                          ),
-                        );
-                      },
+              : Column(
+                  children: [
+                    // Search
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          labelText: 'Search by title or description',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _onSearchChanged,
+                      ),
                     ),
+
+                    // Filters row
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 4),
+                      child: Row(
+                        children: [
+                          // Status filter
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              value: _statusFilter,
+                              decoration: const InputDecoration(
+                                labelText: 'Status',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(value: 'all', child: Text('All')),
+                                DropdownMenuItem(
+                                    value: 'draft', child: Text('Draft')),
+                                DropdownMenuItem(
+                                    value: 'listed', child: Text('Listed')),
+                                DropdownMenuItem(
+                                    value: 'sold', child: Text('Sold')),
+                              ],
+                              onChanged: _onStatusFilterChanged,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+
+                          // Sort filter
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              value: _sortOption,
+                              decoration: const InputDecoration(
+                                labelText: 'Sort by',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: 'newest', child: Text('Newest')),
+                                DropdownMenuItem(
+                                    value: 'price_asc', child: Text('Price ↑')),
+                                DropdownMenuItem(
+                                    value: 'price_desc', child: Text('Price ↓')),
+                              ],
+                              onChanged: _onSortOptionChanged,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 4),
+
+                    // List items
+                    Expanded(
+                      child: _filteredListings.isEmpty
+                          ? const Center(
+                              child: Text('No listings match filters.'),
+                            )
+                          : ListView.builder(
+                              itemCount: _filteredListings.length,
+                              itemBuilder: (context, index) {
+                                final item = _filteredListings[index];
+
+                                String? thumbUrl;
+                                if (item.thumbnailUrl != null) {
+                                  thumbUrl = '$baseUrl${item.thumbnailUrl}';
+                                }
+
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  child: ListTile(
+                                    onTap: () => _openListingDetail(item), // 👈 수정됨
+                                    leading: thumbUrl != null
+                                        ? ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            child: Image.network(
+                                              thumbUrl,
+                                              width: 56,
+                                              height: 56,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : const Icon(
+                                            Icons.image_not_supported,
+                                            size: 40,
+                                          ),
+                                    title: Text(item.title),
+                                    subtitle: Text(
+                                      '${item.price.toStringAsFixed(2)} ${item.currency} • ${item.status}',
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                    trailing: IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.redAccent,
+                                      ),
+                                      onPressed: () => _deleteListing(item),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
       floatingActionButton: FloatingActionButton(
         onPressed: _openNewListing,
         child: const Icon(Icons.add),
