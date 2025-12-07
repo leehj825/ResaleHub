@@ -23,6 +23,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   late Listing _listing;
   bool _deleting = false;
 
+  List<String> _marketplaces = []; 
+
   // 여러 이미지용 상태
   List<String> _imageUrls = []; // "/media/..." 형태
   bool _loadingImages = true;
@@ -39,6 +41,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     super.initState();
     _listing = widget.listing;
     _loadImages();
+    _loadMarketplaces();
   }
 
   Future<void> _loadImages() async {
@@ -63,6 +66,19 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       setState(() {
         _loadingImages = false;
       });
+    }
+  }
+
+  Future<void> _loadMarketplaces() async {
+    try {
+      final mp = await _listingService.getListingMarketplaces(_listing.id);
+      if (!mounted) return;
+      setState(() {
+        _marketplaces = mp;
+      });
+    } catch (e) {
+      // 굳이 에러를 크게 보여줄 필요는 없으니 조용히 무시해도 됨
+      // print('Failed to load marketplaces: $e');
     }
   }
 
@@ -172,6 +188,39 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       });
     }
   }
+
+    Future<void> _publishToEbay() async {
+    try {
+      await _listingService.publishToEbay(_listing.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Published to eBay (dummy).')),
+      );
+      await _loadMarketplaces();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to publish to eBay: $e')),
+      );
+    }
+  }
+
+  Future<void> _publishToPoshmark() async {
+    try {
+      await _listingService.publishToPoshmark(_listing.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Published to Poshmark (dummy).')),
+      );
+      await _loadMarketplaces(); 
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to publish to Poshmark: $e')),
+      );
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -370,6 +419,69 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             ),
 
             const SizedBox(height: 24),
+
+            Text(
+              'Marketplaces',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+
+            if (_marketplaces.isNotEmpty)
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: _marketplaces.map((mp) {
+                  IconData icon;
+                  switch (mp) {
+                    case 'ebay':
+                      icon = Icons.shopping_bag_outlined;
+                      break;
+                    case 'poshmark':
+                      icon = Icons.style_outlined;
+                      break;
+                    default:
+                      icon = Icons.storefront_outlined;
+                  }
+                  return Chip(
+                    avatar: Icon(icon, size: 16),
+                    label: Text(mp),
+                  );
+                }).toList(),
+              )
+            else
+              Text(
+                'Not published to any marketplace yet.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: Colors.grey,
+                ),
+              ),
+
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.shopping_bag_outlined),
+                    label: const Text('List on eBay'),
+                    // 이미 게시되어 있으면 비활성화
+                    onPressed: _marketplaces.contains('ebay')
+                        ? null
+                        : _publishToEbay,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.style_outlined),
+                    label: const Text('List on Poshmark'),
+                    // 이미 게시되어 있으면 비활성화
+                    onPressed: _marketplaces.contains('poshmark')
+                        ? null
+                        : _publishToPoshmark,
+                  ),
+                ),
+              ],
+            ),
 
             if (_deleting)
               const Center(

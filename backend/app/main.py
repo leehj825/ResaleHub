@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
-from app.routers import health, auth, listings, listing_images
+from app.routers import health, auth, listings, listing_images, marketplaces
 
 # --- Load settings ---
 settings = get_settings()
@@ -29,6 +29,7 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(listings.router)
 app.include_router(listing_images.router)
+app.include_router(marketplaces.router)
 
 # --- Static media files ---
 app.mount(

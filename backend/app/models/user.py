@@ -18,3 +18,9 @@ class User(Base):
         back_populates="owner",
         cascade="all, delete-orphan",
     )
+
+    marketplace_accounts = relationship(
+        "MarketplaceAccount",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

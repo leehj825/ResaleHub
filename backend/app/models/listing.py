@@ -48,3 +48,8 @@ class Listing(Base):
         cascade="all, delete-orphan",
         order_by="ListingImage.sort_order",
     )
+    marketplace_links = relationship(
+        "ListingMarketplace",
+        back_populates="listing",
+        cascade="all, delete-orphan",
+    )

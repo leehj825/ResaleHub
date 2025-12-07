@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # 미디어(이미지) 저장용
     media_root: Path = BASE_DIR / "media"
     media_url: str = "/media"
+    
+    ebay_client_id: str
+    ebay_client_secret: str
+    ebay_redirect_uri: str
+    ebay_environment: str = "sandbox"
 
     # pydantic-settings v2 방식 설정
     model_config = SettingsConfigDict(

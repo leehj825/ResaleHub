@@ -236,4 +236,68 @@ class ListingService {
       throw Exception('Failed to delete image: ${res.body}');
     }
   }
+
+    Future<void> publishToEbay(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/$listingId/publish');
+    final res = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to publish to eBay: ${res.body}');
+    }
+  }
+
+  Future<void> publishToPoshmark(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/$listingId/publish');
+    final res = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to publish to Poshmark: ${res.body}');
+    }
+  }
+
+    Future<List<String>> getListingMarketplaces(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/listings/$listingId');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load marketplaces: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as List<dynamic>;
+    return data.map((e) => e.toString()).toList();
+  }
+
 }
