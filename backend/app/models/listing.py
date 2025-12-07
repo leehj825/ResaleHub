@@ -37,3 +37,10 @@ class Listing(Base):
     )
 
     owner = relationship("User", back_populates="listings")
+
+    images = relationship(
+        "ListingImage",
+        back_populates="listing",
+        cascade="all, delete-orphan",
+        order_by="ListingImage.sort_order"
+    )

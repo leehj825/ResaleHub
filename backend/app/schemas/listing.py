@@ -29,5 +29,6 @@ class ListingRead(ListingBase):
     status: str
     created_at: datetime
     updated_at: datetime
+    thumbnail_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

@@ -6,58 +6,66 @@ import 'package:flutter/material.dart';
 import '../models/listing.dart';
 import '../services/listing_service.dart';
 
-class NewListingScreen extends StatefulWidget {
-  const NewListingScreen({super.key});
+class EditListingScreen extends StatefulWidget {
+  final Listing listing;
+
+  const EditListingScreen({
+    super.key,
+    required this.listing,
+  });
 
   @override
-  State<NewListingScreen> createState() => _NewListingScreenState();
+  State<EditListingScreen> createState() => _EditListingScreenState();
 }
 
-class _NewListingScreenState extends State<NewListingScreen> {
-  final _titleController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _priceController = TextEditingController();
+class _EditListingScreenState extends State<EditListingScreen> {
+  late TextEditingController _titleController;
+  late TextEditingController _descriptionController;
+  late TextEditingController _priceController;
 
   bool _saving = false;
   String? _error;
 
   final _listingService = ListingService();
+  List<File> _newImages = [];
 
-  // 선택된 이미지들
-  List<File> _selectedImages = [];
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.listing.title);
+    _descriptionController =
+        TextEditingController(text: widget.listing.description ?? '');
+    _priceController =
+        TextEditingController(text: widget.listing.price.toString());
+  }
 
-  Future<void> _pickImages() async {
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    _priceController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickMoreImages() async {
     setState(() {
       _error = null;
     });
 
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        allowMultiple: true,
-        type: FileType.image,
-      );
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: FileType.image,
+    );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _selectedImages = result.files
-              .where((f) => f.path != null)
-              .map((f) => File(f.path!))
-              .toList();
-        });
-      } else {
-        // 선택 취소
-        debugPrint('User canceled picking files');
-      }
-    } catch (e, st) {
-      debugPrint('File picker error: $e');
-      debugPrint(st.toString());
-      if (!mounted) return;
+    if (result != null && result.files.isNotEmpty) {
       setState(() {
-        _error = 'Failed to open file picker: $e';
+        _newImages = result.files
+            .where((f) => f.path != null)
+            .map((f) => File(f.path!))
+            .toList();
       });
     }
   }
-
 
   Future<void> _save() async {
     setState(() {
@@ -68,8 +76,9 @@ class _NewListingScreenState extends State<NewListingScreen> {
     try {
       final price = double.tryParse(_priceController.text.trim()) ?? 0.0;
 
-      // 1) 우선 Listing JSON으로 생성
-      final listing = await _listingService.createListing(
+      // 1) listing 정보 수정
+      final updated = await _listingService.updateListing(
+        widget.listing.id,
         title: _titleController.text.trim(),
         description: _descriptionController.text.trim().isEmpty
             ? null
@@ -77,14 +86,13 @@ class _NewListingScreenState extends State<NewListingScreen> {
         price: price,
       );
 
-      // 2) 이미지가 선택되어 있다면 업로드
-      if (_selectedImages.isNotEmpty) {
-        await _listingService.uploadImages(listing.id, _selectedImages);
+      // 2) 새로 선택한 이미지 있으면 업로드
+      if (_newImages.isNotEmpty) {
+        await _listingService.uploadImages(widget.listing.id, _newImages);
       }
 
       if (!mounted) return;
-      // ListingsScreen으로 listing을 넘겨서 reload 트리거
-      Navigator.of(context).pop<Listing>(listing);
+      Navigator.of(context).pop<Listing>(updated);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -99,20 +107,12 @@ class _NewListingScreenState extends State<NewListingScreen> {
   }
 
   @override
-  void dispose() {
-    _titleController.dispose();
-    _descriptionController.dispose();
-    _priceController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('New Listing'),
+        title: const Text('Edit Listing'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -137,26 +137,25 @@ class _NewListingScreenState extends State<NewListingScreen> {
             ),
             const SizedBox(height: 16),
 
-            // 이미지 선택 버튼 + 개수 표시
+            // 사진 추가 버튼
             Row(
               children: [
                 ElevatedButton(
-                  onPressed: _saving ? null : _pickImages,
-                  child: const Text('Select Photos'),
+                  onPressed: _saving ? null : _pickMoreImages,
+                  child: const Text('Add Photos'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    _selectedImages.isEmpty
-                        ? 'No photos selected'
-                        : '${_selectedImages.length} photo(s) selected',
+                    _newImages.isEmpty
+                        ? 'No new photos'
+                        : '${_newImages.length} new photo(s) selected',
                     style: theme.textTheme.bodyMedium,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-
             const SizedBox(height: 16),
 
             if (_error != null)
@@ -173,7 +172,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: _save,
-                      child: const Text('Save'),
+                      child: const Text('Save Changes'),
                     ),
                   ),
           ],

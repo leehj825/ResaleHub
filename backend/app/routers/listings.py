@@ -5,11 +5,30 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.config import Settings
 from app.models.user import User
 from app.models.listing import Listing
 from app.schemas.listing import ListingCreate, ListingRead, ListingUpdate
 
 router = APIRouter(prefix="/listings", tags=["listings"])
+
+settings = Settings()
+
+
+def _attach_thumbnail(listing: Listing) -> ListingRead:
+    """
+    SQLAlchemy Listing 객체를 ListingRead로 변환하면서
+    대표 이미지(thumbnail_url)를 붙여주는 헬퍼 함수.
+    """
+    data = ListingRead.model_validate(listing)
+
+    # Listing.images 관계에 이미지가 있으면 첫 번째 것을 썸네일로 사용
+    if getattr(listing, "images", None):
+        if listing.images:
+            first_img = listing.images[0]
+            data.thumbnail_url = f"{settings.media_url}/{first_img.file_path}"
+
+    return data
 
 
 @router.get("/", response_model=List[ListingRead])
@@ -23,7 +42,9 @@ def list_listings(
         .order_by(Listing.created_at.desc())
         .all()
     )
-    return listings
+
+    # 썸네일까지 포함된 ListingRead 리스트로 변환
+    return [_attach_thumbnail(l) for l in listings]
 
 
 @router.post("/", response_model=ListingRead, status_code=status.HTTP_201_CREATED)
@@ -42,7 +63,8 @@ def create_listing(
     db.add(listing)
     db.commit()
     db.refresh(listing)
-    return listing
+
+    return _attach_thumbnail(listing)
 
 
 def _get_owned_listing_or_404(
@@ -73,7 +95,7 @@ def get_listing(
     current_user: User = Depends(get_current_user),
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
-    return listing
+    return _attach_thumbnail(listing)
 
 
 @router.put("/{listing_id}", response_model=ListingRead)
@@ -91,7 +113,7 @@ def update_listing(
     db.add(listing)
     db.commit()
     db.refresh(listing)
-    return listing
+    return _attach_thumbnail(listing)
 
 
 @router.delete("/{listing_id}", status_code=status.HTTP_204_NO_CONTENT)

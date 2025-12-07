@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/listing_service.dart';
+import 'package:frontend/services/auth_service.dart';
 import 'package:frontend/screens/new_listing_screen.dart';
+import 'package:frontend/screens/edit_listing_screen.dart';
 
 class ListingsScreen extends StatefulWidget {
   const ListingsScreen({super.key});
@@ -13,6 +15,8 @@ class ListingsScreen extends StatefulWidget {
 
 class _ListingsScreenState extends State<ListingsScreen> {
   final _listingService = ListingService();
+  final _authService = AuthService(); // baseUrl 여기서 가져옴
+
   bool _loading = true;
   String? _error;
   List<Listing> _listings = [];
@@ -53,13 +57,65 @@ class _ListingsScreenState extends State<ListingsScreen> {
     );
 
     if (created != null) {
-      // 새로 생성됐으면 리스트 다시 로드
       _loadListings();
+    }
+  }
+
+  Future<void> _openEditListing(Listing listing) async {
+    final updated = await Navigator.of(context).push<Listing>(
+      MaterialPageRoute(
+        builder: (_) => EditListingScreen(listing: listing),
+      ),
+    );
+
+    if (updated != null) {
+      _loadListings();
+    }
+  }
+
+  Future<void> _deleteListing(Listing listing) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Listing'),
+        content: Text('Are you sure you want to delete "${listing.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _listingService.deleteListing(listing.id);
+      if (!mounted) return;
+      setState(() {
+        _listings.removeWhere((l) => l.id == listing.id);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete: $e')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final baseUrl = _authService.baseUrl; // 여기서 baseUrl 확보
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('My Listings'),
@@ -74,10 +130,46 @@ class _ListingsScreenState extends State<ListingsScreen> {
                       itemCount: _listings.length,
                       itemBuilder: (context, index) {
                         final item = _listings[index];
-                        return ListTile(
-                          title: Text(item.title),
-                          subtitle: Text(
-                            '${item.price.toStringAsFixed(2)} ${item.currency} • ${item.status}',
+
+                        // thumbnail_url → full URL
+                        String? thumbnailFullUrl;
+                        if (item.thumbnailUrl != null) {
+                          thumbnailFullUrl = '$baseUrl${item.thumbnailUrl}';
+                        }
+
+                        return Card(
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          child: ListTile(
+                            onTap: () => _openEditListing(item), // 탭 → 수정 화면
+                            leading: thumbnailFullUrl != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.network(
+                                      thumbnailFullUrl,
+                                      width: 56,
+                                      height: 56,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.image_not_supported,
+                                    size: 40,
+                                  ),
+                            title: Text(item.title),
+                            subtitle: Text(
+                              '${item.price.toStringAsFixed(2)} ${item.currency} • ${item.status}',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                color: Colors.redAccent,
+                              ),
+                              onPressed: () => _deleteListing(item),
+                            ),
                           ),
                         );
                       },

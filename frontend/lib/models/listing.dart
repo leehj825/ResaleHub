@@ -5,6 +5,7 @@ class Listing {
   final double price;
   final String currency;
   final String status;
+  final String? thumbnailUrl;
 
   Listing({
     required this.id,
@@ -13,6 +14,7 @@ class Listing {
     required this.price,
     required this.currency,
     required this.status,
+    this.thumbnailUrl,
   });
 
   factory Listing.fromJson(Map<String, dynamic> json) {
@@ -23,6 +25,13 @@ class Listing {
       price: double.parse(json['price'].toString()),
       currency: json['currency'] as String,
       status: json['status'] as String,
+      thumbnailUrl: json['thumbnail_url'] as String?,
     );
+  }
+  
+  String? fullThumbnailUrl(String baseUrl) {
+    if (thumbnailUrl == null) return null;
+    // thumbnail_url 이 "/media/..." 형태니까 앞에 baseUrl 붙여줌
+    return '$baseUrl$thumbnailUrl';
   }
 }

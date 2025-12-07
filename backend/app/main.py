@@ -1,26 +1,43 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from app.core.config import get_settings
 from app.core.database import Base, engine
-from app.routers import health, auth, listings
+from app.routers import health, auth, listings, listing_images
 
+# --- Load settings ---
+settings = get_settings()
+
+# --- Create DB tables ---
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="ResaleHub AI")
+# --- Create FastAPI app ---
+app = FastAPI(title=settings.app_name)
 
+# --- CORS (dev only) ---
 app.add_middleware(
-    CORSMiddleware,          # ✅ 여기: 클래스만 넘긴다 (괄호 X)
-    allow_origins=["*"],     # dev only
+    CORSMiddleware,
+    allow_origins=["*"],     # 개발용 (나중에 프론트 앱 주소로 제한 가능)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- Routers ---
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(listings.router)
+app.include_router(listing_images.router)
 
+# --- Static media files ---
+app.mount(
+    settings.media_url,                     # "/media"
+    StaticFiles(directory=settings.media_root),  # backend/media
+    name="media",
+)
 
+# --- Root endpoint ---
 @app.get("/")
 def root():
     return {"message": "ResaleHub backend is running"}
