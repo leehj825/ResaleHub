@@ -4,7 +4,7 @@ import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/listing_service.dart';
 import 'package:frontend/services/auth_service.dart';
 import 'package:frontend/screens/new_listing_screen.dart';
-import 'package:frontend/screens/edit_listing_screen.dart';
+import 'package:frontend/screens/listing_detail_screen.dart';
 
 class ListingsScreen extends StatefulWidget {
   const ListingsScreen({super.key});
@@ -61,16 +61,15 @@ class _ListingsScreenState extends State<ListingsScreen> {
     }
   }
 
-  Future<void> _openEditListing(Listing listing) async {
-    final updated = await Navigator.of(context).push<Listing>(
+  Future<void> _openDetail(Listing listing) async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => EditListingScreen(listing: listing),
+        builder: (_) => ListingDetailScreen(listing: listing),
       ),
     );
-
-    if (updated != null) {
-      _loadListings();
-    }
+    // 상세 페이지에서 수정/삭제가 일어났을 수 있으니 돌아오면 새로고침
+    if (!mounted) return;
+    _loadListings();
   }
 
   Future<void> _deleteListing(Listing listing) async {
@@ -143,7 +142,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                             vertical: 8,
                           ),
                           child: ListTile(
-                            onTap: () => _openEditListing(item), // 탭 → 수정 화면
+                            onTap: () => _openDetail(item), // 👈 탭 → 상세 화면
                             leading: thumbnailFullUrl != null
                                 ? ClipRRect(
                                     borderRadius: BorderRadius.circular(8),

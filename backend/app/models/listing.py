@@ -2,12 +2,12 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column,
-    DateTime,
-    ForeignKey,
     Integer,
-    Numeric,
     String,
     Text,
+    Numeric,
+    DateTime,
+    ForeignKey,
 )
 from sqlalchemy.orm import relationship
 
@@ -26,21 +26,25 @@ class Listing(Base):
     price = Column(Numeric(10, 2), nullable=False, default=0)
     currency = Column(String(3), nullable=False, default="USD")
 
-    status = Column(String(20), nullable=False, default="draft")  # draft, listed, sold
+    status = Column(String(20), nullable=False, default="draft")
 
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # ✅ 썸네일 이미지 URL (선택)
+    thumbnail_url = Column(String(512), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime,
-        nullable=False,
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
+        nullable=False,
     )
 
     owner = relationship("User", back_populates="listings")
 
+    # ListingImage와의 관계 (있다면)
     images = relationship(
         "ListingImage",
         back_populates="listing",
         cascade="all, delete-orphan",
-        order_by="ListingImage.sort_order"
+        order_by="ListingImage.sort_order",
     )

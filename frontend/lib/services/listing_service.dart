@@ -7,15 +7,15 @@ import '../models/listing.dart';
 import 'auth_service.dart';
 
 class ListingService {
-  // 기본 baseUrl (백엔드 주소)
-  final String baseUrl = 'http://127.0.0.1:8000';
-
   ListingService._internal();
   static final ListingService _instance = ListingService._internal();
   factory ListingService() => _instance;
 
   final _authService = AuthService();
 
+  // ---------------------------
+  // 내 Listings 가져오기
+  // ---------------------------
   Future<List<Listing>> getMyListings() async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -41,6 +41,9 @@ class ListingService {
         .toList();
   }
 
+  // ---------------------------
+  // Listing 생성
+  // ---------------------------
   Future<Listing> createListing({
     required String title,
     String? description,
@@ -76,7 +79,9 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  /// 🔧 기존 listing 수정 (title/description/price/status 등 일부만 수정 가능)
+  // ---------------------------
+  // Listing 수정
+  // ---------------------------
   Future<Listing> updateListing(
     int listingId, {
     String? title,
@@ -88,12 +93,12 @@ class ListingService {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
-      throw Exception('Not logged in');
+      throw Exception('Not authenticated');
     }
 
     final url = Uri.parse('$baseUrl/listings/$listingId');
 
-    final Map<String, dynamic> body = {};
+    final body = <String, dynamic>{};
     if (title != null) body['title'] = title;
     if (description != null) body['description'] = description;
     if (price != null) body['price'] = price;
@@ -117,12 +122,14 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  /// 🗑 listing 삭제
+  // ---------------------------
+  // Listing 삭제
+  // ---------------------------
   Future<void> deleteListing(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
-      throw Exception('Not logged in');
+      throw Exception('Not authenticated');
     }
 
     final url = Uri.parse('$baseUrl/listings/$listingId');
@@ -139,14 +146,16 @@ class ListingService {
     }
   }
 
-  /// 📷 이미지 업로드 (기존 + 새로운 사진 추가)
+  // ---------------------------
+  // 이미지 업로드
+  // ---------------------------
   Future<void> uploadImages(int listingId, List<File> files) async {
+    final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
       throw Exception('Not authenticated');
     }
 
-    final baseUrl = _authService.baseUrl;
     final uri = Uri.parse('$baseUrl/listings/$listingId/images');
 
     final request = http.MultipartRequest('POST', uri);
@@ -156,7 +165,7 @@ class ListingService {
       final fileName = file.path.split('/').last;
       request.files.add(
         await http.MultipartFile.fromPath(
-          'files', // FastAPI: files: List[UploadFile] = File(...)
+          'files', // FastAPI에서 files: List[UploadFile] = File(...)
           file.path,
           filename: fileName,
         ),
@@ -168,6 +177,63 @@ class ListingService {
 
     if (response.statusCode != 201) {
       throw Exception('Failed to upload images: ${response.body}');
+    }
+  }
+
+  // ---------------------------
+  // 이미지 목록 가져오기
+  //   GET /listings/{id}/images
+  //   → ["\/media/listings/6/000.jpg", ...]
+  // ---------------------------
+  Future<List<String>> getListingImages(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/listings/$listingId/images');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load images: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as List<dynamic>;
+    return data.map((e) => e as String).toList();
+  }
+
+  // ---------------------------
+  // 개별 이미지 삭제
+  //   imageUrl 예: "/media/listings/6/000.jpg"
+  //   백엔드는 DELETE /listings/{id}/images/{filename}
+  // ---------------------------
+  Future<void> deleteListingImage(int listingId, String imageUrl) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    // "/media/listings/6/000.jpg" → "000.jpg"
+    final parts = imageUrl.split('/');
+    final filename = parts.isNotEmpty ? parts.last : imageUrl;
+
+    final url = Uri.parse('$baseUrl/listings/$listingId/images/$filename');
+    final res = await http.delete(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 204) {
+      throw Exception('Failed to delete image: ${res.body}');
     }
   }
 }
