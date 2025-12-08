@@ -248,3 +248,31 @@ def ebay_status(
         "marketplace": "ebay",
         "username": account.username if account else None,
     }
+
+@router.delete("/ebay/disconnect")
+def ebay_disconnect(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Disconnect eBay account:
+    - Remove customer's MarketplaceAccount entry for eBay
+    - After this, /marketplaces/ebay/status returns connected: false
+    """
+
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "ebay",
+        )
+        .first()
+    )
+
+    if not account:
+        return {"message": "No eBay account was connected."}
+
+    db.delete(account)
+    db.commit()
+
+    return {"message": "eBay account disconnected successfully."}

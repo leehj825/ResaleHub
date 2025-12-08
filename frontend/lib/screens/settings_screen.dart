@@ -65,6 +65,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _disconnectEbay() async {
+    try {
+      await _marketplaceService.disconnectEbay();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Disconnected from eBay')),
+      );
+
+      await _loadStatus(); // 상태 다시 불러오기
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Disconnect failed: $e')),
+      );
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -89,9 +109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Row(
                 children: [
                   Icon(
-                    _ebayConnected
-                        ? Icons.check_circle
-                        : Icons.cancel_outlined,
+                    _ebayConnected ? Icons.check_circle : Icons.cancel_outlined,
                     color: _ebayConnected ? Colors.green : Colors.grey,
                   ),
                   const SizedBox(width: 8),
@@ -100,14 +118,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: theme.textTheme.bodyLarge,
                   ),
                   const Spacer(),
-                  TextButton(
-                    onPressed: _connectEbay,
-                    child: Text(
-                      _ebayConnected ? 'Re-connect' : 'Connect',
+
+                  if (!_ebayConnected)
+                    TextButton(
+                      onPressed: _connectEbay,
+                      child: const Text('Connect'),
                     ),
-                  ),
+
+                  if (_ebayConnected) ...[
+                    TextButton(
+                      onPressed: _disconnectEbay,
+                      child: const Text('Disconnect'),
+                    ),
+                    TextButton(
+                      onPressed: _connectEbay,
+                      child: const Text('Re-connect'),
+                    ),
+                  ],
                 ],
               ),
+
             const SizedBox(height: 16),
             TextButton(
               onPressed: _loadStatus,

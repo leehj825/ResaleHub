@@ -15,9 +15,9 @@ class AuthService {
 
   String get baseUrl {
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'https://sampling-sleeping-median-gcc.trycloudflare.com';
+      return 'https://resalehub.onrender.com';
     } else {
-      return 'http://127.0.0.1:8000';
+      return 'https://resalehub.onrender.com';
     }
   }
 

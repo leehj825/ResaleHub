@@ -52,4 +52,25 @@ class MarketplaceService {
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     return data['auth_url'] as String;
   }
+
+  Future<void> disconnectEbay() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) throw Exception('Not logged in');
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/disconnect');
+
+    final response = await http.delete(
+      url,
+      headers: {
+        "Authorization": "Bearer $token",
+      },
+    );
+
+    if (response.statusCode >= 400) {
+      throw Exception('Failed to disconnect eBay: ${response.body}');
+    }
+  }
+
+
 }
