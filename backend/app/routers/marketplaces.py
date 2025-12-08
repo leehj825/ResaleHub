@@ -351,6 +351,9 @@ async def ebay_me(
             db=db,
             user=current_user,
             path="/sell/account/v1/fulfillment_policy",
+            params={
+                "marketplace_id": "EBAY_US",  # ✅ 필수 파라미터
+            },
         )
     except EbayAuthError as e:
         # 토큰 없거나 refresh 실패 등
