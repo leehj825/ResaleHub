@@ -89,7 +89,7 @@ async def publish_to_ebay(
 ):
     """
     1) 우리 Listing → eBay Inventory Item 생성/업데이트
-    2) Offer 생성
+    2) Offer 생성 (이미 있으면 재사용)
     3) Offer Publish
     4) ListingMarketplace 레코드에 eBay listing 정보 저장
     """
@@ -121,14 +121,13 @@ async def publish_to_ebay(
     quantity = getattr(listing, "quantity", None) or 1
     brand = getattr(listing, "brand", None)
     condition = getattr(listing, "condition", "USED")  # 예: "NEW", "USED"
+
     # Listing 에 필드가 있으면 그걸 사용, 없으면 샌드박스용 기본 카테고리 사용
     ebay_category_id = getattr(listing, "ebay_category_id", None)
-
     if not ebay_category_id:
         # TODO: 나중에는 각 상품에 맞는 카테고리를 UI에서 설정해서 저장하게 만들기
         # 샌드박스 테스트용으로 임시 기본 카테고리 사용 (예: 11450 = Clothing, Shoes & Accessories)
         ebay_category_id = "11450"
-
 
     # 이미지 URL들 (예시: 콤마로 join된 문자열 혹은 리스트)
     image_urls = getattr(listing, "image_urls", []) or []
@@ -185,7 +184,7 @@ async def publish_to_ebay(
     except ValueError:
         inventory_body = None  # 204 No Content 등
 
-    # 3. Offer 생성
+    # 3. Offer 생성 (또는 기존 Offer 재사용)
     offer_payload = {
         "sku": sku,
         "marketplaceId": "EBAY_US",
@@ -194,7 +193,7 @@ async def publish_to_ebay(
         "categoryId": str(ebay_category_id),
         "itemLocation": {
             "country": "US",
-            "postalCode": "95112"   # 임의 값 가능, 샌드박스는 체크 거의 없음
+            "postalCode": "95112",  # 임의 값 가능, 샌드박스는 체크 거의 없음
         },
         "pricingSummary": {
             "price": {
@@ -215,17 +214,41 @@ async def publish_to_ebay(
         json=offer_payload,
     )
 
-    if offer_resp.status_code not in (200, 201):
-        raise HTTPException(
-            status_code=offer_resp.status_code,
-            detail={
-                "message": "Failed to create offer on eBay.",
-                "body": offer_resp.text,
-            },
-        )
+    offer_data = None
+    offer_id = None
 
-    offer_data = offer_resp.json()
-    offer_id = offer_data.get("offerId")
+    if offer_resp.status_code in (200, 201):
+        # 새 Offer 정상 생성
+        offer_data = offer_resp.json()
+        offer_id = offer_data.get("offerId")
+    else:
+        # 에러 응답에서 "Offer entity already exists" 를 파싱해서 기존 offerId 재사용
+        try:
+            body = offer_resp.json()
+        except ValueError:
+            body = None
+
+        if isinstance(body, dict):
+            errors = body.get("errors") or []
+            for err in errors:
+                msg = (err.get("message") or "").lower()
+                if "offer entity already exists" in msg:
+                    params = err.get("parameters") or []
+                    if params:
+                        offer_id = params[0].get("value")
+                    offer_data = body
+                    break
+
+        # 기존 offerId 를 못 찾았으면 에러로 처리
+        if not offer_id:
+            raise HTTPException(
+                status_code=offer_resp.status_code,
+                detail={
+                    "message": "Failed to create offer on eBay.",
+                    "body": offer_resp.text,
+                },
+            )
+
     if not offer_id:
         raise HTTPException(
             status_code=500,
