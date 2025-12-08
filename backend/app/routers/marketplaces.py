@@ -323,3 +323,40 @@ def ebay_disconnect(
     db.commit()
 
     return {"message": "eBay account disconnected successfully."}
+
+
+@router.get("/ebay/me")
+def ebay_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    eBay 연결/토큰 상태를 확인하는 테스트용 엔드포인트.
+    (지금은 eBay 외부 API 호출 없이, DB에 저장된 정보를 그대로 보여줌)
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "ebay",
+        )
+        .first()
+    )
+
+    if not account:
+        # 이 경우 Flutter 쪽 팝업에는 {"detail": "..."} 가 뜸
+        raise HTTPException(
+            status_code=404,
+            detail="No eBay account connected for this user.",
+        )
+
+    return {
+        "connected": True,
+        "marketplace": "ebay",
+        "user_id": current_user.id,
+        "has_access_token": account.access_token is not None,
+        "token_expires_at": account.token_expires_at.isoformat()
+        if account.token_expires_at
+        else None,
+        "username": account.username,
+    }
