@@ -16,8 +16,7 @@ from app.models.listing import Listing
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
-from app.services.ebay_client import ebay_get, ebay_post, EbayAuthError
-
+from app.services.ebay_client import ebay_get, ebay_post, ebay_put, EbayAuthError
 
 router = APIRouter(
     prefix="/marketplaces",
@@ -161,7 +160,7 @@ async def publish_to_ebay(
 
     # 2-1. Inventory Item 생성/업데이트
     try:
-        inventory_resp = await ebay_post(
+        inventory_resp = await ebay_put(
             db=db,
             user=current_user,
             path=f"/sell/inventory/v1/inventory_item/{sku}",

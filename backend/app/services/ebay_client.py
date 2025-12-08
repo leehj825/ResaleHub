@@ -168,3 +168,23 @@ async def ebay_post(
         params=params,
         json=json,
     )
+
+async def ebay_put(
+    db: Session,
+    user: User,
+    path: str,
+    json: dict | None = None,
+    params: dict | None = None,
+):
+    """
+    eBay REST API PUT용 래퍼
+    - 예: /sell/inventory/v1/inventory_item/{sku}
+    """
+    return await ebay_request(
+        method="PUT",
+        db=db,
+        user=user,
+        path=path,
+        params=params,
+        json=json,
+    )
