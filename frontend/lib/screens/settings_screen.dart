@@ -18,7 +18,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _marketplaceService = MarketplaceService();
-  final _auth = AuthService(); // ✅ _auth 추가
+  final _auth = AuthService();
 
   bool _loadingStatus = true;
   bool _ebayConnected = false;
@@ -28,6 +28,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _loadStatus();
+  }
+
+  /// 🔍 eBay Sandbox Inventory 조회 (디버그용)
+  Future<void> _checkEbayInventory() async {
+    try {
+      final data = await _marketplaceService.getEbayInventory();
+      // 콘솔에 전체 JSON 출력
+      // (필요하면 여기서 다이얼로그나 새로운 화면으로 보여줘도 됨)
+      // ignore: avoid_print
+      print('eBay inventory: $data');
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Fetched eBay inventory. Check console log.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load eBay inventory: $e')),
+      );
+    }
   }
 
   Future<void> _loadStatus() async {
@@ -183,6 +206,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextButton(
               onPressed: _testEbayApi,
               child: const Text('Test eBay API'),
+            ),
+            const SizedBox(height: 16),
+            // 🔍 eBay 인벤토리 조회 버튼
+            TextButton(
+              onPressed: _checkEbayInventory,
+              child: const Text('Check eBay Inventory'),
             ),
           ],
         ),

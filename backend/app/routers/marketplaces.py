@@ -353,6 +353,21 @@ async def publish_to_ebay(
         },
     }
 
+@router.get("/ebay/inventory")
+async def ebay_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        resp = await ebay_get(
+            db=db,
+            user=current_user,
+            path="/sell/inventory/v1/inventory_item",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return resp.json()
 
 # --------------------------------------
 # Dummy Publish — Poshmark
