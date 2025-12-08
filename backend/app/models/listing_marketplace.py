@@ -21,7 +21,7 @@ class ListingMarketplace(Base):
     # [추가됨] Inventory 관리를 위한 SKU
     sku = Column(String(255), nullable=True)
 
-    # [추가됨] eBay Offer ID (Publish 단계 전/후 중요 식별자)
+    # [추가됨] eBay Offer ID
     offer_id = Column(String(255), nullable=True)
 
     # 실제 상품 URL (View on eBay 버튼용)
