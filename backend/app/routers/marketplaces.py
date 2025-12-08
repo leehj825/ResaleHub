@@ -192,6 +192,10 @@ async def publish_to_ebay(
         "format": "FIXED_PRICE",
         "availableQuantity": quantity,
         "categoryId": str(ebay_category_id),
+        "itemLocation": {
+            "country": "US",
+            "postalCode": "95112"   # 임의 값 가능, 샌드박스는 체크 거의 없음
+        },
         "pricingSummary": {
             "price": {
                 "currency": "USD",  # TODO: listing.currency 있으면 그걸 사용
