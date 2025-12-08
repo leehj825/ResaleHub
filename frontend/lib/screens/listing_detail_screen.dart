@@ -172,7 +172,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       if (!mounted) return;
       setState(() {
         _listing = updated;
-      );
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Status updated to "$newStatus"')),
       );

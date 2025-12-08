@@ -122,13 +122,14 @@ async def publish_to_ebay(
     quantity = getattr(listing, "quantity", None) or 1
     brand = getattr(listing, "brand", None)
     condition = getattr(listing, "condition", "USED")  # 예: "NEW", "USED"
+    # Listing 에 필드가 있으면 그걸 사용, 없으면 샌드박스용 기본 카테고리 사용
     ebay_category_id = getattr(listing, "ebay_category_id", None)
 
     if not ebay_category_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Listing does not have ebay_category_id set.",
-        )
+        # TODO: 나중에는 각 상품에 맞는 카테고리를 UI에서 설정해서 저장하게 만들기
+        # 샌드박스 테스트용으로 임시 기본 카테고리 사용 (예: 11450 = Clothing, Shoes & Accessories)
+        ebay_category_id = "11450"
+
 
     # 이미지 URL들 (예시: 콤마로 join된 문자열 혹은 리스트)
     image_urls = getattr(listing, "image_urls", []) or []
