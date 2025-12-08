@@ -299,5 +299,24 @@ class ListingService {
     final data = jsonDecode(res.body) as List<dynamic>;
     return data.map((e) => e.toString()).toList();
   }
+  // [추가] 단일 리스팅 상세 조회 (새로고침용)
+  Future<Listing> getListing(int id) async {
+    final token = await _authService.getToken();
+    final baseUrl = _authService.baseUrl;
+    final url = Uri.parse('$baseUrl/listings/$id');
+    
+    final response = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
 
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return Listing.fromJson(data);
+    } else {
+      throw Exception('Failed to load listing: ${response.body}');
+    }
+  }
 }
