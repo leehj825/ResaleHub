@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart'; // [필수] 브라우저 열기용 패키지
 import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/auth_service.dart';
 import 'package:frontend/services/listing_service.dart' as ls;
@@ -18,22 +19,20 @@ class ListingDetailScreen extends StatefulWidget {
 
 class _ListingDetailScreenState extends State<ListingDetailScreen> {
   final _authService = AuthService();
-  final _listingService = ls.ListingService(); // alias
+  final _listingService = ls.ListingService();
 
   late Listing _listing;
   bool _deleting = false;
 
-  List<String> _marketplaces = [];
-
   // 여러 이미지용 상태
-  List<String> _imageUrls = []; // "/media/..." 형태
+  List<String> _imageUrls = [];
   bool _loadingImages = true;
   String? _imageError;
 
   // 상태 변경 중 여부
   bool _updatingStatus = false;
+  bool _publishing = false; // [추가] 발행 중 로딩 표시
 
-  // 사용 가능한 상태 목록
   final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
   @override
@@ -41,7 +40,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     super.initState();
     _listing = widget.listing;
     _loadImages();
-    _loadMarketplaces();
+    // 기존 _loadMarketplaces()는 더 이상 필요 없음 (Listing 모델 안에 정보가 있음)
   }
 
   Future<void> _loadImages() async {
@@ -69,16 +68,17 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-  Future<void> _loadMarketplaces() async {
+  /// [중요] 발행 후 URL 등 최신 정보를 받아오기 위해 리스팅을 다시 불러옴
+  Future<void> _reloadListing() async {
     try {
-      final mp = await _listingService.getListingMarketplaces(_listing.id);
+      final updated = await _listingService.getListing(_listing.id);
       if (!mounted) return;
       setState(() {
-        _marketplaces = mp;
+        _listing = updated;
       });
     } catch (e) {
-      // 굳이 에러를 크게 보여줄 필요는 없으니 조용히 무시해도 됨
-      // print('Failed to load marketplaces: $e');
+      // 리로드 실패 시 조용히 넘어가거나 로그 출력
+      debugPrint('Failed to reload listing: $e');
     }
   }
 
@@ -93,7 +93,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       setState(() {
         _listing = updated;
       });
-      // 수정 후 썸네일/이미지 바뀌었을 수 있으니 다시 로드
       _loadImages();
     }
   }
@@ -129,7 +128,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     try {
       await _listingService.deleteListing(_listing.id);
       if (!mounted) return;
-      Navigator.of(context).pop(); // 목록으로 돌아가기
+      Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -156,7 +155,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-  /// 상태 변경 처리
   Future<void> _changeStatus(String newStatus) async {
     if (newStatus == _listing.status || _updatingStatus) return;
 
@@ -189,36 +187,134 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
+  // --- [eBay 연동] ---
   Future<void> _publishToEbay() async {
+    setState(() => _publishing = true);
     try {
       await _listingService.publishToEbay(_listing.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Published to eBay.')),
+        const SnackBar(content: Text('Published to eBay successfully!')),
       );
-      await _loadMarketplaces();
+      // URL 등을 확인하기 위해 리스팅 정보 갱신
+      await _reloadListing();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to publish to eBay: $e')),
       );
+    } finally {
+      if (mounted) setState(() => _publishing = false);
     }
   }
 
   Future<void> _publishToPoshmark() async {
+    setState(() => _publishing = true);
     try {
       await _listingService.publishToPoshmark(_listing.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Published to Poshmark (dummy).')),
       );
-      await _loadMarketplaces();
+      await _reloadListing();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to publish to Poshmark: $e')),
       );
+    } finally {
+      if (mounted) setState(() => _publishing = false);
     }
+  }
+
+  /// [UI] 마켓플레이스 섹션 빌더
+  Widget _buildMarketplaceSection() {
+    // 1. eBay 정보 찾기
+    final ebayInfo = _listing.marketplaces.firstWhere(
+      (m) => m.marketplace == 'ebay',
+      orElse: () => MarketplaceInfo(marketplace: '', status: ''),
+    );
+    // URL이 있으면 "이미 발행됨"으로 간주
+    bool isEbayPublished = ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty;
+
+    // 2. Poshmark 정보 찾기 (예시)
+    final poshInfo = _listing.marketplaces.firstWhere(
+      (m) => m.marketplace == 'poshmark',
+      orElse: () => MarketplaceInfo(marketplace: '', status: ''),
+    );
+    bool isPoshPublished = poshInfo.status == 'published';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          "Marketplaces",
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 10),
+
+        if (_publishing)
+          const Padding(
+            padding: EdgeInsets.all(8.0),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+
+        Row(
+          children: [
+            // --- eBay Button ---
+            Expanded(
+              child: isEbayPublished
+                  ? ElevatedButton.icon(
+                      onPressed: () async {
+                        final uri = Uri.parse(ebayInfo.listingUrl!);
+                        if (await canLaunchUrl(uri)) {
+                          await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        } else {
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Could not open: ${ebayInfo.listingUrl}')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_new, color: Colors.white),
+                      label: const Text("View eBay"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _publishing ? null : _publishToEbay,
+                      icon: const Icon(Icons.shopping_bag_outlined),
+                      label: const Text("List on eBay"),
+                    ),
+            ),
+            const SizedBox(width: 8),
+
+            // --- Poshmark Button ---
+            Expanded(
+              child: isPoshPublished
+                  ? ElevatedButton.icon(
+                      onPressed: () {
+                        // Poshmark URL이 있다면 여기서 launchUrl
+                      },
+                      icon: const Icon(Icons.check),
+                      label: const Text("Poshmark"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey, // 비활성 느낌
+                        foregroundColor: Colors.white,
+                      ),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _publishing ? null : _publishToPoshmark,
+                      icon: const Icon(Icons.style_outlined),
+                      label: const Text("List Posh"),
+                    ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -226,7 +322,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     final theme = Theme.of(context);
     final baseUrl = _authService.baseUrl;
 
-    // 메인 이미지: 여러 장 있으면 첫 번째, 없으면 thumbnailUrl, 그것도 없으면 null
     String? mainImageUrl;
     if (_imageUrls.isNotEmpty) {
       mainImageUrl = '$baseUrl${_imageUrls.first}';
@@ -255,7 +350,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 메인 큰 이미지
+            // 메인 이미지
             Center(
               child: mainImageUrl != null
                   ? ClipRRect(
@@ -265,17 +360,22 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                         child: Image.network(
                           mainImageUrl,
                           fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) => Container(
+                            color: Colors.grey.shade200,
+                            child: const Icon(Icons.broken_image, size: 50, color: Colors.grey),
+                          ),
                         ),
                       ),
                     )
                   : Container(
-                      width: 200,
-                      height: 200,
-                      alignment: Alignment.center,
+                      width: double.infinity,
+                      height: 300,
                       decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.grey.shade300),
                       ),
+                      alignment: Alignment.center,
                       child: const Icon(
                         Icons.image_not_supported,
                         size: 64,
@@ -285,7 +385,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             ),
             const SizedBox(height: 16),
 
-            // 썸네일 리스트 (여러 이미지 + 삭제 버튼)
+            // 서브 이미지 리스트
             if (_loadingImages)
               const Center(child: CircularProgressIndicator())
             else if (_imageError != null)
@@ -302,7 +402,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   itemBuilder: (context, index) {
                     final url = _imageUrls[index];
                     final fullUrl = '$baseUrl$url';
-
                     return Padding(
                       padding: const EdgeInsets.only(right: 8.0),
                       child: Stack(
@@ -327,11 +426,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 padding: const EdgeInsets.all(2),
-                                child: const Icon(
-                                  Icons.close,
-                                  size: 16,
-                                  color: Colors.white,
-                                ),
+                                child: const Icon(Icons.close,
+                                    size: 16, color: Colors.white),
                               ),
                             ),
                           ),
@@ -340,16 +436,10 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                     );
                   },
                 ),
-              )
-            else
-              Text(
-                'No additional images',
-                style: theme.textTheme.bodySmall,
               ),
-
+            
             const SizedBox(height: 24),
 
-            // 제목 + 가격
             Text(
               _listing.title,
               style: theme.textTheme.headlineSmall,
@@ -359,16 +449,14 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
               '${_listing.price.toStringAsFixed(2)} ${_listing.currency}',
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
+                color: Colors.green,
               ),
             ),
 
             const SizedBox(height: 16),
 
-            // 🔻 상태 표시 + 변경 UI
-            Text(
-              'Status',
-              style: theme.textTheme.titleMedium,
-            ),
+            // 상태 변경 섹션
+            Text('Status', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -380,35 +468,21 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   onSelected: _updatingStatus
                       ? null
                       : (selected) {
-                          if (selected) {
-                            _changeStatus(status);
-                          }
+                          if (selected) _changeStatus(status);
                         },
                 );
               }).toList(),
             ),
-            if (_updatingStatus) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: const [
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 8),
-                  Text('Updating status...'),
-                ],
+            if (_updatingStatus)
+              const Padding(
+                padding: EdgeInsets.only(top: 8.0),
+                child: LinearProgressIndicator(),
               ),
-            ],
 
             const SizedBox(height: 24),
 
             // 설명
-            Text(
-              'Description',
-              style: theme.textTheme.titleMedium,
-            ),
+            Text('Description', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
               _listing.description?.isNotEmpty == true
@@ -418,74 +492,13 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             ),
 
             const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 16),
 
-            Text(
-              'Marketplaces',
-              style: theme.textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-
-            if (_marketplaces.isNotEmpty)
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: _marketplaces.map((mp) {
-                  IconData icon;
-                  switch (mp) {
-                    case 'ebay':
-                      icon = Icons.shopping_bag_outlined;
-                      break;
-                    case 'poshmark':
-                      icon = Icons.style_outlined;
-                      break;
-                    default:
-                      icon = Icons.storefront_outlined;
-                  }
-                  return Chip(
-                    avatar: Icon(icon, size: 16),
-                    label: Text(mp),
-                  );
-                }).toList(),
-              )
-            else
-              Text(
-                'Not published to any marketplace yet.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: Colors.grey,
-                ),
-              ),
-
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.shopping_bag_outlined),
-                    label: const Text('List on eBay'),
-                    // 이미 게시되어 있으면 비활성화
-                    onPressed: _marketplaces.contains('ebay')
-                        ? null
-                        : _publishToEbay,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.style_outlined),
-                    label: const Text('List on Poshmark'),
-                    // 이미 게시되어 있으면 비활성화
-                    onPressed: _marketplaces.contains('poshmark')
-                        ? null
-                        : _publishToPoshmark,
-                  ),
-                ),
-              ],
-            ),
-
-            if (_deleting)
-              const Center(
-                child: CircularProgressIndicator(),
-              ),
+            // [수정된 부분] 마켓플레이스 섹션 (View 버튼 포함)
+            _buildMarketplaceSection(),
+            
+            const SizedBox(height: 40),
           ],
         ),
       ),
