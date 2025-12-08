@@ -15,14 +15,20 @@ class ListingMarketplace(Base):
     # 'ebay' / 'poshmark'
     marketplace = Column(String(50), nullable=False)
 
-    # 실제 마켓플레이스 아이템 ID (나중에)
+    # eBay Item ID (Listing ID)
     external_item_id = Column(String(255), nullable=True)
+    
+    # [추가됨] Inventory 관리를 위한 SKU
+    sku = Column(String(255), nullable=True)
 
-    # 마켓플레이스 URL (나중에)
+    # [추가됨] eBay Offer ID (Publish 단계 전/후 중요 식별자)
+    offer_id = Column(String(255), nullable=True)
+
+    # 실제 상품 URL (View on eBay 버튼용)
     external_url = Column(String(500), nullable=True)
 
     status = Column(String(50), nullable=False, default="published")  
-    # e.g. 'published', 'failed', 'ended'
+    # e.g. 'published', 'active', 'failed', 'ended'
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
