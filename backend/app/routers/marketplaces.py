@@ -16,6 +16,9 @@ from app.models.listing import Listing
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
+from app.services.ebay_client import ebay_get, EbayAuthError
+
+
 router = APIRouter(
     prefix="/marketplaces",
     tags=["marketplaces"],
@@ -326,37 +329,45 @@ def ebay_disconnect(
 
 
 @router.get("/ebay/me")
-def ebay_me(
+async def ebay_me(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    eBay 연결/토큰 상태를 확인하는 테스트용 엔드포인트.
-    (지금은 eBay 외부 API 호출 없이, DB에 저장된 정보를 그대로 보여줌)
+    실제 eBay Sell API 하나를 호출해서 결과를 반환하는 테스트용 엔드포인트.
+    여기서는 fulfillment_policy 목록을 가져와 본다.
     """
-    account = (
-        db.query(MarketplaceAccount)
-        .filter(
-            MarketplaceAccount.user_id == current_user.id,
-            MarketplaceAccount.marketplace == "ebay",
-        )
-        .first()
-    )
 
-    if not account:
-        # 이 경우 Flutter 쪽 팝업에는 {"detail": "..."} 가 뜸
+    try:
+        # 예시: 판매자의 배송 정책 목록 조회
+        resp = await ebay_get(
+            db=db,
+            user=current_user,
+            path="/sell/account/v1/fulfillment_policy",
+        )
+    except EbayAuthError as e:
+        # 토큰 없거나 refresh 실패 등
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # eBay 쪽에서 토큰 문제로 401 보내는 경우
+    if resp.status_code == 401:
         raise HTTPException(
-            status_code=404,
-            detail="No eBay account connected for this user.",
+            status_code=401,
+            detail={
+                "message": "Unauthorized from eBay (check scopes/token)",
+                "body": resp.text,
+            },
         )
 
-    return {
-        "connected": True,
-        "marketplace": "ebay",
-        "user_id": current_user.id,
-        "has_access_token": account.access_token is not None,
-        "token_expires_at": account.token_expires_at.isoformat()
-        if account.token_expires_at
-        else None,
-        "username": account.username,
-    }
+    # 그 외 에러 코드
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail={
+                "message": "eBay API error",
+                "body": resp.text,
+            },
+        )
+
+    # 성공이면 eBay JSON 그대로 반환
+    return resp.json()
