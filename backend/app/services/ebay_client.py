@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.marketplace_account import MarketplaceAccount
 from app.models.user import User
+from app.routers import marketplaces
 
 settings = get_settings()
 
@@ -60,7 +61,7 @@ async def get_valid_ebay_access_token(db: Session, user: User) -> str:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": account.refresh_token,
-        # scope 필요하면 나중에 맞춰서 추가
+        "scope": " ".join(marketplaces.EBAY_SCOPES),
     }
 
     async with httpx.AsyncClient() as client:

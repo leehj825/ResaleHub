@@ -26,6 +26,13 @@ router = APIRouter(
 
 settings = get_settings()
 
+EBAY_SCOPES = [
+    "https://api.ebay.com/oauth/api_scope",  # 기본
+    "https://api.ebay.com/oauth/api_scope/sell.account.readonly",  # 계정 정책 조회용
+    # 나중에 listing 만들 때 필요하면 여기에 더 추가:
+    # "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    # "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+]
 
 # --------------------------------------
 # 공통: Listing 존재 + 소유권 검사
@@ -138,7 +145,7 @@ def ebay_connect(current_user: User = Depends(get_current_user)):
         "redirect_uri": settings.ebay_redirect_uri,
         "response_type": "code",
         # 필요에 따라 scope 확장 가능
-        "scope": "https://api.ebay.com/oauth/api_scope",
+        "scope": " ".join(EBAY_SCOPES),
         "state": str(current_user.id),  # 유저 ID 그대로 넣어서 콜백에서 복원
     }
 
