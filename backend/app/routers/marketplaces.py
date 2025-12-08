@@ -143,7 +143,8 @@ async def publish_to_ebay(
                 "quantity": quantity,
             }
         },
-        "condition": condition,
+        # TODO: Production 갈 때 Inventory API에서 허용하는 enum 값으로 condition 추가
+        # "condition": condition,
         "product": {
             "title": title,
             "description": description,
