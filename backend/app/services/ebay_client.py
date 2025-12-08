@@ -113,6 +113,7 @@ async def ebay_request(
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
         "Content-Type": "application/json",
+        "Content-Language": "en-US",
     }
 
     url = EBAY_API_BASE + path
