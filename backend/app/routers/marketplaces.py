@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -72,7 +73,7 @@ def _create_dummy_publish(db: Session, listing: Listing, marketplace: str):
 def publish_to_ebay(
     listing_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
     lm = _create_dummy_publish(db, listing, "ebay")
@@ -86,7 +87,7 @@ def publish_to_ebay(
 def publish_to_poshmark(
     listing_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
     lm = _create_dummy_publish(db, listing, "poshmark")
@@ -114,7 +115,7 @@ def get_listing_marketplaces(
 
 
 # ============================================================
-#                (신규) eBay OAuth: Step 1
+#                eBay OAuth: Step 1 - Connect
 # ============================================================
 @router.get("/ebay/connect")
 def ebay_connect(current_user: User = Depends(get_current_user)):
@@ -126,13 +127,14 @@ def ebay_connect(current_user: User = Depends(get_current_user)):
     if not settings.ebay_client_id or not settings.ebay_redirect_uri:
         raise HTTPException(
             status_code=500,
-            detail="eBay OAuth is not configured on the server"
+            detail="eBay OAuth is not configured on the server",
         )
 
     params = {
         "client_id": settings.ebay_client_id,
         "redirect_uri": settings.ebay_redirect_uri,
         "response_type": "code",
+        # 필요에 따라 scope 확장 가능
         "scope": "https://api.ebay.com/oauth/api_scope",
         "state": str(current_user.id),  # 유저 ID 그대로 넣어서 콜백에서 복원
     }
@@ -147,31 +149,23 @@ def ebay_connect(current_user: User = Depends(get_current_user)):
     return {"auth_url": auth_url}
 
 
-#from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.responses import HTMLResponse
-from sqlalchemy.orm import Session
-from datetime import datetime
-
-from app.core.config import get_settings
-from app.core.database import get_db
-from app.models.user import User
-from app.models.marketplace_account import MarketplaceAccount
-
-# ... 위쪽 생략 ...
-settings = get_settings()
-
+# ============================================================
+#          eBay OAuth: Step 2 - Callback (code → token)
+# ============================================================
 @router.get("/ebay/oauth/callback")
 async def ebay_oauth_callback(
     request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    eBay에서 redirect 될 때 콜백 URL
+    eBay에서 redirect 될 때 호출되는 콜백.
 
-    - 쿼리의 state(=user id) 를 읽고
-    - 그 유저의 MarketplaceAccount(ebay)를 생성/업데이트
-    - 간단한 HTML을 돌려서 브라우저 탭 닫기
+    1) code, state 받기
+    2) code로 eBay 토큰 엔드포인트에 요청해서 access_token/refresh_token 받기
+    3) MarketplaceAccount에 저장
+    4) 브라우저에는 간단한 안내 HTML 출력
     """
+
     code = request.query_params.get("code")
     state = request.query_params.get("state")
 
@@ -180,7 +174,7 @@ async def ebay_oauth_callback(
     if not state:
         raise HTTPException(status_code=400, detail="Missing 'state' in callback")
 
-    # 우리는 /ebay/connect 에서 state=current_user.id 로 보냈음
+    # state = user_id 로 사용했으니까 거기서 유저 찾기
     try:
         user_id = int(state)
     except ValueError:
@@ -188,9 +182,54 @@ async def ebay_oauth_callback(
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=400, detail="Unknown user")
+        raise HTTPException(status_code=404, detail="User not found for state")
 
-    # 👉 지금은 token 교환은 생략하고, "연결됨" 플래그 용으로만 저장
+    # ---- eBay 토큰 엔드포인트 선택 (sandbox / production) ----
+    token_url = (
+        "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
+        if settings.ebay_environment == "sandbox"
+        else "https://api.ebay.com/identity/v1/oauth2/token"
+    )
+
+    # Basic auth 헤더 만들기: base64(client_id:client_secret)
+    raw = f"{settings.ebay_client_id}:{settings.ebay_client_secret}"
+    basic = base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {basic}",
+    }
+
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": settings.ebay_redirect_uri,
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(token_url, data=data, headers=headers)
+
+    if resp.status_code != 200:
+        # 디버깅을 위해 응답 그대로 보여주기
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail={
+                "message": "Failed to exchange code for token",
+                "body": resp.text,
+            },
+        )
+
+    token_json = resp.json()
+    access_token = token_json.get("access_token")
+    refresh_token = token_json.get("refresh_token")
+    expires_in = token_json.get("expires_in", 7200)
+
+    if not access_token:
+        raise HTTPException(status_code=500, detail="No access_token in response")
+
+    expires_at = datetime.utcnow() + timedelta(seconds=int(expires_in))
+
+    # ---- MarketplaceAccount upsert ----
     account = (
         db.query(MarketplaceAccount)
         .filter(
@@ -204,23 +243,21 @@ async def ebay_oauth_callback(
         account = MarketplaceAccount(
             user_id=user.id,
             marketplace="ebay",
-            username=None,        # 나중에 eBay user id 넣을 수 있음
-            access_token=None,    # 나중에 실제 토큰 저장
-            refresh_token=None,
-            token_expires_at=None,
         )
         db.add(account)
-    else:
-        # 기존 계정이 있으면 업데이트 시간만 갱신
-        account.updated_at = datetime.utcnow()
+
+    account.access_token = access_token
+    account.refresh_token = refresh_token
+    account.token_expires_at = expires_at
 
     db.commit()
+    db.refresh(account)
 
     # 브라우저 탭 닫아주는 간단 HTML
     html = """
     <html>
       <body>
-        <p>eBay sandbox 연결이 완료되었습니다. 이 창을 닫고 앱으로 돌아가 주세요.</p>
+        <p>eBay 계정 연결이 완료되었습니다. 이 창을 닫고 앱으로 돌아가 주세요.</p>
         <script>
           window.close();
         </script>
@@ -229,6 +266,10 @@ async def ebay_oauth_callback(
     """
     return HTMLResponse(content=html)
 
+
+# ============================================================
+#                  eBay 연결 상태 조회
+# ============================================================
 @router.get("/ebay/status")
 def ebay_status(
     db: Session = Depends(get_db),
@@ -243,12 +284,18 @@ def ebay_status(
         .first()
     )
 
+    connected = account is not None and account.access_token is not None
+
     return {
-        "connected": account is not None,
+        "connected": connected,
         "marketplace": "ebay",
         "username": account.username if account else None,
     }
 
+
+# ============================================================
+#                  eBay 연결 해제 (Disconnect)
+# ============================================================
 @router.delete("/ebay/disconnect")
 def ebay_disconnect(
     db: Session = Depends(get_db),
@@ -256,8 +303,8 @@ def ebay_disconnect(
 ):
     """
     Disconnect eBay account:
-    - Remove customer's MarketplaceAccount entry for eBay
-    - After this, /marketplaces/ebay/status returns connected: false
+    - 해당 유저의 eBay MarketplaceAccount 레코드 삭제
+    - 이후 /marketplaces/ebay/status 는 connected: false 를 반환
     """
 
     account = (

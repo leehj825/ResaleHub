@@ -83,7 +83,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
   }
+  Future<void> _testEbayApi() async {
+    try {
+      final baseUrl = _auth.baseUrl;
+      final token = await _auth.getToken();
+      if (token == null) throw Exception('Not logged in');
 
+      final url = Uri.parse('$baseUrl/marketplaces/ebay/me');
+      final res = await http.get(url, headers: {
+        'Authorization': 'Bearer $token',
+      });
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('eBay API result'),
+          content: Text(res.body),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Test failed: $e')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -143,6 +167,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: _loadStatus,
               child: const Text('Refresh status'),
             ),
+            TextButton(
+              onPressed: _testEbayApi,
+              child: const Text('Test eBay API'),
+            ),
+
           ],
         ),
       ),
