@@ -16,7 +16,7 @@ from app.models.listing import Listing
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
-from app.services.ebay_client import ebay_get, EbayAuthError
+from app.services.ebay_client import ebay_get, ebay_post, EbayAuthError
 
 
 router = APIRouter(
@@ -29,10 +29,11 @@ settings = get_settings()
 EBAY_SCOPES = [
     "https://api.ebay.com/oauth/api_scope",  # 기본
     "https://api.ebay.com/oauth/api_scope/sell.account.readonly",  # 계정 정책 조회용
-    # 나중에 listing 만들 때 필요하면 여기에 더 추가:
-    # "https://api.ebay.com/oauth/api_scope/sell.inventory",
-    # "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+    # 실제 listing 발행용
+    "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
 ]
+
 
 # --------------------------------------
 # 공통: Listing 존재 + 소유권 검사
@@ -50,6 +51,7 @@ def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listi
 
 # --------------------------------------
 # 더미 publish 기록 생성 공통 함수
+# (지금은 Poshmark에서만 사용)
 # --------------------------------------
 def _create_dummy_publish(db: Session, listing: Listing, marketplace: str):
     existing = (
@@ -77,17 +79,221 @@ def _create_dummy_publish(db: Session, listing: Listing, marketplace: str):
 
 
 # --------------------------------------
-# Dummy Publish — eBay
+# 실제 Publish — eBay (Sandbox 기준)
+# Inventory Item → Offer → Publish
 # --------------------------------------
 @router.post("/ebay/{listing_id}/publish")
-def publish_to_ebay(
+async def publish_to_ebay(
     listing_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    1) 우리 Listing → eBay Inventory Item 생성/업데이트
+    2) Offer 생성
+    3) Offer Publish
+    4) ListingMarketplace 레코드에 eBay listing 정보 저장
+    """
+
+    # 1. Listing 소유권 체크
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
-    lm = _create_dummy_publish(db, listing, "ebay")
-    return lm
+
+    # 간단한 SKU 규칙 (원하면 DB 필드로 분리 가능)
+    sku = f"user{current_user.id}-listing{listing.id}"
+
+    # Listing 모델 필드 매핑 (네 모델 구조에 맞게 필요 시 수정)
+    title = getattr(listing, "title", None) or getattr(listing, "name", None)
+    if not title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Listing must have a title.",
+        )
+
+    description = getattr(listing, "description", "") or ""
+    # Decimal 이라면 float()로 변환
+    price = getattr(listing, "price", None)
+    if price is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Listing must have a price.",
+        )
+    price_value = float(price)
+
+    quantity = getattr(listing, "quantity", None) or 1
+    brand = getattr(listing, "brand", None)
+    condition = getattr(listing, "condition", "USED")  # 예: "NEW", "USED"
+    ebay_category_id = getattr(listing, "ebay_category_id", None)
+
+    if not ebay_category_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Listing does not have ebay_category_id set.",
+        )
+
+    # 이미지 URL들 (예시: 콤마로 join된 문자열 혹은 리스트)
+    image_urls = getattr(listing, "image_urls", []) or []
+    if isinstance(image_urls, str):
+        image_urls = [u.strip() for u in image_urls.split(",") if u.strip()]
+
+    # 2. Inventory Item payload 구성
+    inventory_payload = {
+        "sku": sku,
+        "availability": {
+            "shipToLocationAvailability": {
+                "quantity": quantity,
+            }
+        },
+        "condition": condition,
+        "product": {
+            "title": title,
+            "description": description,
+        },
+    }
+
+    if brand:
+        inventory_payload["product"]["aspects"] = {
+            "Brand": [brand],
+        }
+
+    if image_urls:
+        inventory_payload["product"]["imageUrls"] = image_urls
+
+    # 2-1. Inventory Item 생성/업데이트
+    try:
+        inventory_resp = await ebay_post(
+            db=db,
+            user=current_user,
+            path=f"/sell/inventory/v1/inventory_item/{sku}",
+            json=inventory_payload,
+        )
+    except EbayAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Inventory API 는 200/201/204 를 줄 수 있음
+    if inventory_resp.status_code not in (200, 201, 204):
+        raise HTTPException(
+            status_code=inventory_resp.status_code,
+            detail={
+                "message": "Failed to create/update inventory item on eBay.",
+                "body": inventory_resp.text,
+            },
+        )
+
+    try:
+        inventory_body = inventory_resp.json()
+    except ValueError:
+        inventory_body = None  # 204 No Content 등
+
+    # 3. Offer 생성
+    offer_payload = {
+        "sku": sku,
+        "marketplaceId": "EBAY_US",
+        "format": "FIXED_PRICE",
+        "availableQuantity": quantity,
+        "categoryId": str(ebay_category_id),
+        "pricingSummary": {
+            "price": {
+                "currency": "USD",  # TODO: listing.currency 있으면 그걸 사용
+                "value": f"{price_value:.2f}",
+            }
+        },
+        # Sandbox: Business Policy 없이도 동작 가능.
+        # Production: fulfillment/payment/return policy + merchantLocationKey 필요.
+        # "listingPolicies": {...},
+        # "merchantLocationKey": "...",
+    }
+
+    offer_resp = await ebay_post(
+        db=db,
+        user=current_user,
+        path="/sell/inventory/v1/offer",
+        json=offer_payload,
+    )
+
+    if offer_resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=offer_resp.status_code,
+            detail={
+                "message": "Failed to create offer on eBay.",
+                "body": offer_resp.text,
+            },
+        )
+
+    offer_data = offer_resp.json()
+    offer_id = offer_data.get("offerId")
+    if not offer_id:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Offer created but offerId not found in response.",
+                "body": offer_data,
+            },
+        )
+
+    # 4. Offer Publish
+    publish_resp = await ebay_post(
+        db=db,
+        user=current_user,
+        path=f"/sell/inventory/v1/offer/{offer_id}/publish",
+        json={},
+    )
+
+    if publish_resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=publish_resp.status_code,
+            detail={
+                "message": "Failed to publish offer on eBay.",
+                "body": publish_resp.text,
+            },
+        )
+
+    try:
+        publish_data = publish_resp.json()
+    except ValueError:
+        publish_data = {}
+
+    ebay_listing_id = publish_data.get("listingId")
+
+    # 5. ListingMarketplace upsert (eBay)
+    lm = (
+        db.query(ListingMarketplace)
+        .filter(
+            ListingMarketplace.listing_id == listing.id,
+            ListingMarketplace.marketplace == "ebay",
+        )
+        .first()
+    )
+
+    if not lm:
+        lm = ListingMarketplace(
+            listing_id=listing.id,
+            marketplace="ebay",
+        )
+        db.add(lm)
+
+    lm.status = "published"
+    lm.external_item_id = ebay_listing_id or offer_id
+
+    external_url = None
+    if ebay_listing_id:
+        if settings.ebay_environment == "sandbox":
+            external_url = f"https://sandbox.ebay.com/itm/{ebay_listing_id}"
+        else:
+            external_url = f"https://www.ebay.com/itm/{ebay_listing_id}"
+    lm.external_url = external_url
+
+    db.commit()
+    db.refresh(lm)
+
+    return {
+        "listing_marketplace": lm,
+        "ebay": {
+            "sku": sku,
+            "inventory_item": inventory_body,
+            "offer": offer_data,
+            "publish_result": publish_data,
+        },
+    }
 
 
 # --------------------------------------

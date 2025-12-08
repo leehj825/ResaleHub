@@ -23,7 +23,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   late Listing _listing;
   bool _deleting = false;
 
-  List<String> _marketplaces = []; 
+  List<String> _marketplaces = [];
 
   // 여러 이미지용 상태
   List<String> _imageUrls = []; // "/media/..." 형태
@@ -172,7 +172,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       if (!mounted) return;
       setState(() {
         _listing = updated;
-      });
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Status updated to "$newStatus"')),
       );
@@ -189,12 +189,12 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-    Future<void> _publishToEbay() async {
+  Future<void> _publishToEbay() async {
     try {
       await _listingService.publishToEbay(_listing.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Published to eBay (dummy).')),
+        const SnackBar(content: Text('Published to eBay.')),
       );
       await _loadMarketplaces();
     } catch (e) {
@@ -212,7 +212,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Published to Poshmark (dummy).')),
       );
-      await _loadMarketplaces(); 
+      await _loadMarketplaces();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -220,7 +220,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       );
     }
   }
-
 
   @override
   Widget build(BuildContext context) {

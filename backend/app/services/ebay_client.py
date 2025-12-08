@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.marketplace_account import MarketplaceAccount
 from app.models.user import User
-from app.routers import marketplaces
+from app.routers import marketplaces  # EBAY_SCOPES 사용
 
 settings = get_settings()
 
@@ -64,7 +64,7 @@ async def get_valid_ebay_access_token(db: Session, user: User) -> str:
         "scope": " ".join(marketplaces.EBAY_SCOPES),
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(token_url, data=data, headers=headers)
 
     if resp.status_code != 200:
@@ -95,6 +95,40 @@ EBAY_API_BASE = (
 )
 
 
+async def ebay_request(
+    method: str,
+    db: Session,
+    user: User,
+    path: str,
+    params: dict | None = None,
+    json: dict | None = None,
+):
+    """
+    eBay REST 공통 요청 래퍼.
+    - path 예: "/sell/inventory/v1/inventory_item/{sku}"
+    """
+    access_token = await get_valid_ebay_access_token(db, user)
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    url = EBAY_API_BASE + path
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=json,
+        )
+
+    return resp
+
+
 async def ebay_get(
     db: Session,
     user: User,
@@ -105,17 +139,32 @@ async def ebay_get(
     eBay REST API GET용 간단 래퍼
     - path 예: "/sell/account/v1/fulfillment_policy"
     """
-    access_token = await get_valid_ebay_access_token(db, user)
+    return await ebay_request(
+        method="GET",
+        db=db,
+        user=user,
+        path=path,
+        params=params,
+        json=None,
+    )
 
-    headers = {
-      "Authorization": f"Bearer {access_token}",
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-    }
 
-    url = EBAY_API_BASE + path
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers, params=params)
-
-    return resp
+async def ebay_post(
+    db: Session,
+    user: User,
+    path: str,
+    json: dict | None = None,
+    params: dict | None = None,
+):
+    """
+    eBay REST API POST용 간단 래퍼
+    - path 예: "/sell/inventory/v1/inventory_item/{sku}"
+    """
+    return await ebay_request(
+        method="POST",
+        db=db,
+        user=user,
+        path=path,
+        params=params,
+        json=json,
+    )
