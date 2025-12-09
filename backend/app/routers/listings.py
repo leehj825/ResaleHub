@@ -1,13 +1,14 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, selectinload # [추가] 관계 데이터를 로딩하기 위해 필요
+from sqlalchemy.orm import Session, selectinload 
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.config import Settings
 from app.models.user import User
 from app.models.listing import Listing
+from app.models.listing_marketplace import ListingMarketplace # [추가] 연결 정보 저장을 위해 필요
 from app.schemas.listing import ListingCreate, ListingRead, ListingUpdate
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -57,16 +58,47 @@ def create_listing(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # 1. DB 모델에 없는 필드(import용) 분리
+    listing_data = listing_in.model_dump(exclude={
+        "import_from_marketplace", 
+        "import_external_id", 
+        "import_url"
+    })
+    
+    # 2. Listing 생성 (sku, condition 포함)
     listing = Listing(
-        owner_id=current_user.id,
-        title=listing_in.title,
-        description=listing_in.description,
-        price=listing_in.price,
-        currency=listing_in.currency,
+        **listing_data,
+        owner_id=current_user.id
     )
     db.add(listing)
     db.commit()
     db.refresh(listing)
+
+    # 3. [Import 로직] eBay에서 가져온 경우 연결 정보 자동 생성
+    if listing_in.import_from_marketplace:
+        marketplace = listing_in.import_from_marketplace
+        
+        # 중복 방지 (혹시나 해서 체크)
+        existing_link = db.query(ListingMarketplace).filter(
+            ListingMarketplace.listing_id == listing.id,
+            ListingMarketplace.marketplace == marketplace
+        ).first()
+
+        if not existing_link:
+            new_link = ListingMarketplace(
+                listing_id=listing.id,
+                marketplace=marketplace,
+                status="published", # Import 된 것은 이미 발행된 상태
+                external_item_id=listing_in.import_external_id,
+                external_url=listing_in.import_url,
+                sku=listing.sku,    # Listing에 저장된 SKU 사용
+                offer_id=None       # Offer ID는 알 수 없으므로 비워둠
+            )
+            db.add(new_link)
+            db.commit()
+            
+            # 연결 정보 포함하여 리스팅 다시 로딩
+            db.refresh(listing)
 
     return _attach_thumbnail(listing)
 
@@ -113,7 +145,10 @@ def update_listing(
     current_user: User = Depends(get_current_user),
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
+    
+    # exclude_unset=True: 보내지 않은 필드는 건드리지 않음
     data = listing_in.model_dump(exclude_unset=True)
+    
     for field, value in data.items():
         setattr(listing, field, value)
 

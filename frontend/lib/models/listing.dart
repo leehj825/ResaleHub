@@ -6,7 +6,7 @@ class MarketplaceInfo {
   final String status;
   final String? externalItemId;
   
-  // [추가됨] 상세 정보를 위한 필드
+  // 상세 정보를 위한 필드
   final String? sku;
   final String? offerId;
 
@@ -22,11 +22,11 @@ class MarketplaceInfo {
   factory MarketplaceInfo.fromJson(Map<String, dynamic> json) {
     return MarketplaceInfo(
       marketplace: json['marketplace'] ?? '',
-      listingUrl: json['external_url'], // 백엔드 스키마 필드명(external_url) 매핑
+      listingUrl: json['external_url'],
       status: json['status'] ?? '',
       externalItemId: json['external_item_id'],
-      sku: json['sku'],          // [추가됨] 백엔드 필드 매핑
-      offerId: json['offer_id'], // [추가됨] 백엔드 필드 매핑
+      sku: json['sku'],
+      offerId: json['offer_id'],
     );
   }
 }
@@ -37,10 +37,14 @@ class Listing {
   final String? description;
   final double price;
 
-  // [필수 필드 유지] 앱 전반에서 사용됨
+  // [필수 필드]
   final String currency;
   final String status;
   final String? thumbnailUrl;
+
+  // [추가됨] Import 된 아이템의 SKU와 Condition을 최상위에서 접근하기 위함
+  final String? sku;
+  final String? condition;
 
   // [상세 화면용]
   final List<String> imageUrls;
@@ -56,6 +60,8 @@ class Listing {
     this.currency = 'USD',
     this.status = 'draft',
     this.thumbnailUrl,
+    this.sku,        // [추가]
+    this.condition,  // [추가]
     this.imageUrls = const [],
     this.marketplaces = const [],
   });
@@ -76,6 +82,10 @@ class Listing {
       currency: json['currency'] as String? ?? 'USD',
       status: json['status'] as String? ?? 'draft',
       thumbnailUrl: json['thumbnail_url'] as String?,
+      
+      // [추가됨] 백엔드 JSON 매핑
+      sku: json['sku'] as String?,
+      condition: json['condition'] as String?,
       
       imageUrls: json['image_urls'] != null 
           ? List<String>.from(json['image_urls']) 

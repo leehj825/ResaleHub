@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:frontend/models/ebay_item.dart';
-import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/marketplace_service.dart';
 import 'package:frontend/services/listing_service.dart';
 import 'package:frontend/screens/ebay_item_detail_screen.dart'; // [필수] 상세화면 임포트
@@ -48,7 +47,7 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
     }
   }
 
-  // [기능 추가] eBay 아이템을 내 앱 인벤토리로 가져오기
+  // [수정됨] eBay 아이템을 내 앱 인벤토리로 가져오기 (SKU, Condition, ImportFrom 전달)
   Future<void> _importItemToApp(EbayItem item) async {
     // 확인 팝업
     final confirm = await showDialog<bool>(
@@ -67,17 +66,23 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
 
     try {
       // 1. eBay 정보를 바탕으로 로컬 Listing 객체 생성
-      // 주의: Listing 모델에 맞는 필드만 채워넣음 (가격 정보가 eBay Inventory API에 없을 수 있어 0.0 처리)
       await _listingService.createListing(
         title: item.title,
-        description: item.description.isNotEmpty ? item.description : "Imported from eBay SKU: ${item.sku}",
-        price: 0.0, // Inventory API에는 가격이 별도 Offer에 있어서 일단 0으로 가져옴
+        description: item.description.isNotEmpty 
+            ? item.description 
+            : "Imported from eBay SKU: ${item.sku}",
+        price: 0.0, // Inventory API에는 가격 정보가 없을 수 있어 0으로 처리 (필요시 수정)
         currency: "USD",
+        
+        // [중요] Import 관련 정보 전달
+        sku: item.sku,
+        condition: item.condition,
+        importFrom: 'ebay', // 백엔드에서 이를 보고 ListingMarketplace(status='published') 생성
       );
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Successfully imported to local inventory!')),
+        const SnackBar(content: Text('Successfully imported and linked to eBay!')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -149,7 +154,7 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
           child: ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             onTap: () {
-              // [기능 추가] 탭하면 상세 화면으로 이동
+              // 상세 화면으로 이동
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => EbayItemDetailScreen(item: item),
@@ -161,9 +166,13 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
               child: SizedBox(
                 width: 60,
                 height: 60,
-                child: item.imageUrl != null
-                    ? Image.network(item.imageUrl!, fit: BoxFit.cover)
-                    : Container(color: Colors.grey[200], child: const Icon(Icons.shopping_bag)),
+                child: item.imageUrl != null && item.imageUrl!.isNotEmpty
+                    ? Image.network(
+                        item.imageUrl!, 
+                        fit: BoxFit.cover,
+                        errorBuilder: (ctx, err, stack) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image, color: Colors.grey)),
+                      )
+                    : Container(color: Colors.grey[200], child: const Icon(Icons.shopping_bag, color: Colors.grey)),
               ),
             ),
             title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),

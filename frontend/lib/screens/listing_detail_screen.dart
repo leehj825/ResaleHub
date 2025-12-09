@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // [필수] 클립보드 사용을 위해 추가
+import 'package:flutter/services.dart'; // Clipboard
 import 'package:url_launcher/url_launcher.dart';
 import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/auth_service.dart';
@@ -25,14 +25,12 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   late Listing _listing;
   bool _deleting = false;
 
-  // 여러 이미지용 상태
   List<String> _imageUrls = [];
   bool _loadingImages = true;
   String? _imageError;
 
-  // 상태 변경 중 여부
   bool _updatingStatus = false;
-  bool _publishing = false; 
+  bool _publishing = false;
 
   final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
@@ -68,7 +66,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-  /// [중요] 발행 후 URL 등 최신 정보를 받아오기 위해 리스팅을 다시 불러옴
   Future<void> _reloadListing() async {
     try {
       final updated = await _listingService.getListing(_listing.id);
@@ -109,10 +106,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: Colors.red),
-            ),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -120,9 +114,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
     if (confirmed != true) return;
 
-    setState(() {
-      _deleting = true;
-    });
+    setState(() => _deleting = true);
 
     try {
       await _listingService.deleteListing(_listing.id);
@@ -130,9 +122,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _deleting = false;
-      });
+      setState(() => _deleting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to delete: $e')),
       );
@@ -157,9 +147,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   Future<void> _changeStatus(String newStatus) async {
     if (newStatus == _listing.status || _updatingStatus) return;
 
-    setState(() {
-      _updatingStatus = true;
-    });
+    setState(() => _updatingStatus = true);
 
     try {
       final updated = await _listingService.updateListing(
@@ -167,9 +155,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         status: newStatus,
       );
       if (!mounted) return;
-      setState(() {
-        _listing = updated;
-      });
+      setState(() => _listing = updated);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Status updated to "$newStatus"')),
       );
@@ -180,13 +166,10 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       );
     } finally {
       if (!mounted) return;
-      setState(() {
-        _updatingStatus = false;
-      });
+      setState(() => _updatingStatus = false);
     }
   }
 
-  // --- [eBay 연동] ---
   Future<void> _publishToEbay() async {
     setState(() => _publishing = true);
     try {
@@ -225,14 +208,13 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-  // --- [UI Helper] 상세 정보 한 줄 (복사 기능 포함) ---
   Widget _buildDetailRow(String label, String value, {bool copyable = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
           SizedBox(
-            width: 70,
+            width: 80,
             child: Text(label, style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.w500, fontSize: 13)),
           ),
           Expanded(
@@ -256,14 +238,16 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     );
   }
 
-  /// [UI] 마켓플레이스 섹션 빌더 (카드 형태)
   Widget _buildMarketplaceSection() {
     // 1. eBay 정보
     final ebayInfo = _listing.marketplaces.firstWhere(
       (m) => m.marketplace == 'ebay',
       orElse: () => MarketplaceInfo(marketplace: '', status: ''),
     );
-    bool isEbayPublished = ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty;
+    
+    // [수정됨] URL이 없더라도 status가 published면 발행된 것으로 간주 (Import된 경우 대비)
+    bool isEbayPublished = (ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty) || 
+                           ebayInfo.status == 'published';
 
     // 2. Poshmark 정보
     final poshInfo = _listing.marketplaces.firstWhere(
@@ -276,7 +260,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          "Marketplaces",
+          "Marketplace Integration",
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 12),
@@ -287,7 +271,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             child: Center(child: CircularProgressIndicator()),
           ),
 
-        // --- eBay Card ---
         Card(
           elevation: 2,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -321,37 +304,38 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 
                 if (isEbayPublished) ...[
                   const Divider(height: 24),
-                  // 상세 정보 표시 (ID, SKU, OfferID)
                   if (ebayInfo.externalItemId != null)
                     _buildDetailRow("Item ID", ebayInfo.externalItemId!, copyable: true),
-                  if (ebayInfo.sku != null)
-                    _buildDetailRow("SKU", ebayInfo.sku!, copyable: true),
+                  // 만약 마켓플레이스 정보에 SKU가 없으면 리스팅 자체 SKU 표시
+                  _buildDetailRow("SKU", ebayInfo.sku ?? _listing.sku ?? "N/A", copyable: true),
                   if (ebayInfo.offerId != null)
                     _buildDetailRow("Offer ID", ebayInfo.offerId!, copyable: true),
                   
                   const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () async {
-                        final uri = Uri.parse(ebayInfo.listingUrl!);
-                        if (await canLaunchUrl(uri)) {
-                          await launchUrl(uri, mode: LaunchMode.externalApplication);
-                        } else {
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Could not open: ${ebayInfo.listingUrl}')),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.open_in_new, color: Colors.white),
-                      label: const Text("View on eBay Sandbox"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
+                  
+                  if (ebayInfo.listingUrl != null)
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final uri = Uri.parse(ebayInfo.listingUrl!);
+                          if (await canLaunchUrl(uri)) {
+                            await launchUrl(uri, mode: LaunchMode.externalApplication);
+                          }
+                        },
+                        icon: const Icon(Icons.open_in_new, color: Colors.white),
+                        label: const Text("View on eBay Sandbox"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
+                    )
+                  else
+                    const Text(
+                      "Imported from inventory (URL unavailable)",
+                      style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic),
                     ),
-                  ),
                 ] else ...[
                   const SizedBox(height: 16),
                   SizedBox(
@@ -370,7 +354,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
         const SizedBox(height: 16),
 
-        // --- Poshmark Card (간단 버전) ---
         Card(
           elevation: 1,
           color: Colors.grey.shade50,
@@ -406,16 +389,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       appBar: AppBar(
         title: const Text('Listing Detail'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.edit),
-            onPressed: _editListing,
-            tooltip: 'Edit',
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _deleting ? null : _deleteListing,
-            tooltip: 'Delete',
-          ),
+          IconButton(icon: const Icon(Icons.edit), onPressed: _editListing),
+          IconButton(icon: const Icon(Icons.delete_outline), onPressed: _deleting ? null : _deleteListing),
         ],
       ),
       body: SingleChildScrollView(
@@ -433,102 +408,80 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                         child: Image.network(
                           mainImageUrl,
                           fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => Container(
-                            color: Colors.grey.shade200,
-                            child: const Icon(Icons.broken_image, size: 50, color: Colors.grey),
-                          ),
+                          errorBuilder: (c, e, s) => Container(color: Colors.grey.shade200, child: const Icon(Icons.broken_image)),
                         ),
                       ),
                     )
                   : Container(
-                      width: double.infinity,
-                      height: 300,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey.shade300),
-                      ),
-                      alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.image_not_supported,
-                        size: 64,
-                        color: Colors.grey,
-                      ),
+                      width: double.infinity, height: 300,
+                      decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
+                      child: const Icon(Icons.image_not_supported, size: 64, color: Colors.grey),
                     ),
             ),
             const SizedBox(height: 16),
 
-            // 서브 이미지 리스트
-            if (_loadingImages)
-              const Center(child: CircularProgressIndicator())
-            else if (_imageError != null)
-              Text(
-                _imageError!,
-                style: theme.textTheme.bodyMedium?.copyWith(color: Colors.red),
-              )
-            else if (_imageUrls.isNotEmpty)
+            // 서브 이미지
+            if (_imageUrls.isNotEmpty)
               SizedBox(
-                height: 100,
+                height: 80,
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
                   itemCount: _imageUrls.length,
                   itemBuilder: (context, index) {
-                    final url = _imageUrls[index];
-                    final fullUrl = '$baseUrl$url';
+                    final fullUrl = '$baseUrl${_imageUrls[index]}';
                     return Padding(
                       padding: const EdgeInsets.only(right: 8.0),
-                      child: Stack(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              fullUrl,
-                              width: 100,
-                              height: 100,
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                          Positioned(
-                            right: 2,
-                            top: 2,
-                            child: InkWell(
-                              onTap: () => _deleteImage(url),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                padding: const EdgeInsets.all(2),
-                                child: const Icon(Icons.close,
-                                    size: 16, color: Colors.white),
-                              ),
-                            ),
-                          ),
-                        ],
+                      child: GestureDetector(
+                        onTap: () => _deleteImage(_imageUrls[index]),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(fullUrl, width: 80, height: 80, fit: BoxFit.cover),
+                        ),
                       ),
                     );
                   },
                 ),
               ),
-            
+
             const SizedBox(height: 24),
-
-            Text(
-              _listing.title,
-              style: theme.textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${_listing.price.toStringAsFixed(2)} ${_listing.currency}',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Colors.green,
-              ),
-            ),
-
+            Text(_listing.title, style: theme.textTheme.headlineSmall),
+            Text('${_listing.price.toStringAsFixed(2)} ${_listing.currency}',
+                style: theme.textTheme.titleMedium?.copyWith(color: Colors.green, fontWeight: FontWeight.bold)),
+            
             const SizedBox(height: 16),
 
-            // 상태 변경 섹션
+            // [추가된 부분] SKU & Condition 표시
+            if (_listing.sku != null || _listing.condition != null) ...[
+              Row(
+                children: [
+                  if (_listing.sku != null)
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("SKU", style: theme.textTheme.labelMedium?.copyWith(color: Colors.grey)),
+                          const SizedBox(height: 4),
+                          SelectableText(_listing.sku!, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  if (_listing.condition != null)
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("Condition", style: theme.textTheme.labelMedium?.copyWith(color: Colors.grey)),
+                          const SizedBox(height: 4),
+                          Text(_listing.condition!, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // 상태 변경 칩
             Text('Status', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Wrap(
@@ -547,30 +500,18 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
               }).toList(),
             ),
             if (_updatingStatus)
-              const Padding(
-                padding: EdgeInsets.only(top: 8.0),
-                child: LinearProgressIndicator(),
-              ),
-
-            const SizedBox(height: 24),
-
-            // 설명
-            Text('Description', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              _listing.description?.isNotEmpty == true
-                  ? _listing.description!
-                  : 'No description',
-              style: theme.textTheme.bodyMedium,
-            ),
+              const Padding(padding: EdgeInsets.only(top: 8.0), child: LinearProgressIndicator()),
 
             const SizedBox(height: 24),
             const Divider(),
-            const SizedBox(height: 16),
-
-            // [수정된 부분] 마켓플레이스 섹션 (View 버튼 + 상세정보 포함)
-            _buildMarketplaceSection(),
             
+            _buildMarketplaceSection(),
+
+            const Divider(),
+            const SizedBox(height: 16),
+            Text('Description', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(_listing.description ?? 'No description', style: theme.textTheme.bodyMedium),
             const SizedBox(height: 40),
           ],
         ),

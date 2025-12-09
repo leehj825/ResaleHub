@@ -42,13 +42,19 @@ class ListingService {
   }
 
   // ---------------------------
-  // Listing 생성
+  // Listing 생성 (Import 파라미터 추가)
   // ---------------------------
   Future<Listing> createListing({
     required String title,
     String? description,
     required double price,
     String currency = 'USD',
+    // [추가된 파라미터들]
+    String? sku,
+    String? condition,
+    String? importFrom,      // 'ebay'
+    String? importExternalId,// Item ID
+    String? importUrl,       // URL
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -57,18 +63,26 @@ class ListingService {
     }
 
     final url = Uri.parse('$baseUrl/listings/');
+    
+    final body = {
+      'title': title,
+      'description': description,
+      'price': price,
+      'currency': currency,
+      'sku': sku,
+      'condition': condition,
+      'import_from_marketplace': importFrom,
+      'import_external_id': importExternalId,
+      'import_url': importUrl,
+    };
+
     final res = await http.post(
       url,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({
-        'title': title,
-        'description': description,
-        'price': price,
-        'currency': currency,
-      }),
+      body: jsonEncode(body),
     );
 
     if (res.statusCode != 201) {
@@ -89,6 +103,8 @@ class ListingService {
     double? price,
     String? currency,
     String? status,
+    String? sku,
+    String? condition,
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -104,6 +120,8 @@ class ListingService {
     if (price != null) body['price'] = price;
     if (currency != null) body['currency'] = currency;
     if (status != null) body['status'] = status;
+    if (sku != null) body['sku'] = sku;
+    if (condition != null) body['condition'] = condition;
 
     final res = await http.put(
       url,
@@ -165,7 +183,7 @@ class ListingService {
       final fileName = file.path.split('/').last;
       request.files.add(
         await http.MultipartFile.fromPath(
-          'files', // FastAPI에서 files: List[UploadFile] = File(...)
+          'files',
           file.path,
           filename: fileName,
         ),
@@ -182,8 +200,6 @@ class ListingService {
 
   // ---------------------------
   // 이미지 목록 가져오기
-  //   GET /listings/{id}/images
-  //   → ["\/media/listings/6/000.jpg", ...]
   // ---------------------------
   Future<List<String>> getListingImages(int listingId) async {
     final baseUrl = _authService.baseUrl;
@@ -210,8 +226,6 @@ class ListingService {
 
   // ---------------------------
   // 개별 이미지 삭제
-  //   imageUrl 예: "/media/listings/6/000.jpg"
-  //   백엔드는 DELETE /listings/{id}/images/{filename}
   // ---------------------------
   Future<void> deleteListingImage(int listingId, String imageUrl) async {
     final baseUrl = _authService.baseUrl;
@@ -220,7 +234,6 @@ class ListingService {
       throw Exception('Not logged in');
     }
 
-    // "/media/listings/6/000.jpg" → "000.jpg"
     final parts = imageUrl.split('/');
     final filename = parts.isNotEmpty ? parts.last : imageUrl;
 
@@ -237,7 +250,10 @@ class ListingService {
     }
   }
 
-    Future<void> publishToEbay(int listingId) async {
+  // ---------------------------
+  // eBay 연동
+  // ---------------------------
+  Future<void> publishToEbay(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -277,7 +293,7 @@ class ListingService {
     }
   }
 
-    Future<List<String>> getListingMarketplaces(int listingId) async {
+  Future<List<String>> getListingMarketplaces(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -299,6 +315,7 @@ class ListingService {
     final data = jsonDecode(res.body) as List<dynamic>;
     return data.map((e) => e.toString()).toList();
   }
+
   // [추가] 단일 리스팅 상세 조회 (새로고침용)
   Future<Listing> getListing(int id) async {
     final token = await _authService.getToken();

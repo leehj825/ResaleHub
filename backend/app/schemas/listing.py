@@ -22,10 +22,17 @@ class ListingBase(BaseModel):
     description: Optional[str] = None
     price: Decimal = Field(ge=0)
     currency: str = Field(default="USD", max_length=3)
+    
+    # [추가됨] SKU 및 상태 (Import 기능 지원 및 상세 표시용)
+    sku: Optional[str] = None
+    condition: Optional[str] = None
 
 
 class ListingCreate(ListingBase):
-    pass
+    # [추가됨] Import 시 사용되는 임시 필드들 (DB 컬럼 아님, 로직용)
+    import_from_marketplace: Optional[str] = None  # 예: "ebay"
+    import_external_id: Optional[str] = None       # eBay Item ID
+    import_url: Optional[str] = None               # eBay Link
 
 
 class ListingUpdate(BaseModel):
@@ -34,6 +41,10 @@ class ListingUpdate(BaseModel):
     price: Optional[Decimal] = Field(default=None, ge=0)
     currency: Optional[str] = Field(default=None, max_length=3)
     status: Optional[str] = None
+    
+    # [추가됨] 업데이트 가능하도록 추가
+    sku: Optional[str] = None
+    condition: Optional[str] = None
 
 
 class ListingRead(ListingBase):
