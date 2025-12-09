@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:frontend/models/ebay_item.dart';
 import 'package:frontend/services/marketplace_service.dart';
 import 'package:frontend/services/listing_service.dart';
-import 'package:frontend/screens/ebay_item_detail_screen.dart'; 
+import 'package:frontend/screens/ebay_item_detail_screen.dart';
 
 class EbayInventoryScreen extends StatefulWidget {
   const EbayInventoryScreen({super.key});
@@ -47,7 +47,7 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
     }
   }
 
-  // [FIX] Passes image URL to createListing
+  // [수정됨] 이미지 URL도 함께 전송
   Future<void> _importItemToApp(EbayItem item) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -74,7 +74,7 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
         sku: item.sku,
         condition: item.condition,
         importFrom: 'ebay', 
-        thumbnailUrl: item.imageUrl, // [FIX] Passing the image URL here
+        thumbnailUrl: item.imageUrl, // [중요] 썸네일 이미지 전달
       );
 
       if (!mounted) return;

@@ -245,7 +245,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       orElse: () => MarketplaceInfo(marketplace: '', status: ''),
     );
     
-    // [수정됨] URL이 없더라도 status가 published면 발행된 것으로 간주 (Import된 경우 대비)
     bool isEbayPublished = (ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty) || 
                            ebayInfo.status == 'published';
 
@@ -306,8 +305,12 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   const Divider(height: 24),
                   if (ebayInfo.externalItemId != null)
                     _buildDetailRow("Item ID", ebayInfo.externalItemId!, copyable: true),
-                  // 만약 마켓플레이스 정보에 SKU가 없으면 리스팅 자체 SKU 표시
+                  
                   _buildDetailRow("SKU", ebayInfo.sku ?? _listing.sku ?? "N/A", copyable: true),
+                  
+                  // [UI 수정] Location 정보 표시 추가
+                  _buildDetailRow("Location", "San Jose, US (Default)", copyable: false),
+
                   if (ebayInfo.offerId != null)
                     _buildDetailRow("Offer ID", ebayInfo.offerId!, copyable: true),
                   
@@ -382,7 +385,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     if (_imageUrls.isNotEmpty) {
       mainImageUrl = '$baseUrl${_imageUrls.first}';
     } else if (_listing.thumbnailUrl != null) {
-      mainImageUrl = '$baseUrl${_listing.thumbnailUrl}';
+      // [수정] 썸네일 URL 그대로 사용 (Import 시 저장된 외부 URL)
+      mainImageUrl = _listing.thumbnailUrl;
     }
 
     return Scaffold(
@@ -398,7 +402,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 메인 이미지
             Center(
               child: mainImageUrl != null
                   ? ClipRRect(
@@ -420,7 +423,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             ),
             const SizedBox(height: 16),
 
-            // 서브 이미지
             if (_imageUrls.isNotEmpty)
               SizedBox(
                 height: 80,
@@ -450,7 +452,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             
             const SizedBox(height: 16),
 
-            // [추가된 부분] SKU & Condition 표시
+            // SKU & Condition 표시
             if (_listing.sku != null || _listing.condition != null) ...[
               Row(
                 children: [
@@ -481,7 +483,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
               const SizedBox(height: 16),
             ],
 
-            // 상태 변경 칩
             Text('Status', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Wrap(

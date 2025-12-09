@@ -13,9 +13,6 @@ class ListingService {
 
   final _authService = AuthService();
 
-  // ---------------------------
-  // Get My Listings
-  // ---------------------------
   Future<List<Listing>> getMyListings() async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -41,9 +38,7 @@ class ListingService {
         .toList();
   }
 
-  // ---------------------------
-  // Create Listing (Updated with thumbnailUrl)
-  // ---------------------------
+  // [수정됨] thumbnailUrl 파라미터 추가
   Future<Listing> createListing({
     required String title,
     String? description,
@@ -54,7 +49,7 @@ class ListingService {
     String? importFrom,
     String? importExternalId,
     String? importUrl,
-    String? thumbnailUrl, // [FIX] Added parameter
+    String? thumbnailUrl, // 추가
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -74,7 +69,7 @@ class ListingService {
       'import_from_marketplace': importFrom,
       'import_external_id': importExternalId,
       'import_url': importUrl,
-      'thumbnail_url': thumbnailUrl, // [FIX] Added to body
+      'thumbnail_url': thumbnailUrl, // 백엔드로 전송
     };
 
     final res = await http.post(
@@ -94,9 +89,8 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  // ---------------------------
-  // Update Listing
-  // ---------------------------
+  // ... (나머지 updateListing, deleteListing, uploadImages, getListingImages 등은 기존과 동일) ...
+  // [파일 길이상 생략된 부분은 기존 코드를 그대로 유지하세요]
   Future<Listing> updateListing(
     int listingId, {
     String? title,
@@ -141,9 +135,6 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  // ---------------------------
-  // Delete Listing
-  // ---------------------------
   Future<void> deleteListing(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -165,9 +156,6 @@ class ListingService {
     }
   }
 
-  // ---------------------------
-  // Upload Images
-  // ---------------------------
   Future<void> uploadImages(int listingId, List<File> files) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -199,9 +187,6 @@ class ListingService {
     }
   }
 
-  // ---------------------------
-  // Get Listing Images
-  // ---------------------------
   Future<List<String>> getListingImages(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -225,9 +210,6 @@ class ListingService {
     return data.map((e) => e as String).toList();
   }
 
-  // ---------------------------
-  // Delete Listing Image
-  // ---------------------------
   Future<void> deleteListingImage(int listingId, String imageUrl) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -251,9 +233,6 @@ class ListingService {
     }
   }
 
-  // ---------------------------
-  // Publish to eBay
-  // ---------------------------
   Future<void> publishToEbay(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
