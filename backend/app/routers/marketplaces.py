@@ -1,5 +1,5 @@
 from typing import List
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote # [중요] URL 인코딩 함수
 import base64
 from datetime import datetime, timedelta
 
@@ -43,36 +43,33 @@ def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listi
     return listing
 
 # ---------------------------------------------------------
-# [FIX] Helper: Create/Ensure Merchant Location Exists
-# This fixes Error 25002 (Item.Country missing)
+# [FIX] eBay Merchant Location 강제 생성 (Error 25002 해결)
 # ---------------------------------------------------------
 async def _ensure_merchant_location(db: Session, user: User):
     """
-    Ensures a 'merchant location' exists on eBay.
-    Without this, creating an Offer fails because eBay doesn't know where the item ships from.
+    eBay에 배송 출발지 정보를 등록합니다. 키 이름을 'store_v1'으로 변경하여 충돌을 방지합니다.
     """
-    merchant_location_key = "default_warehouse" 
+    merchant_location_key = "store_v1" 
     
-    # 1. Define Location Payload (San Jose, CA for Sandbox testing)
     location_payload = {
-        "name": "Default Warehouse",
+        "name": "Main Store",
         "location": {
             "address": {
                 "addressLine1": "2055 Hamilton Ave",
                 "city": "San Jose",
                 "stateOrProvince": "CA",
                 "postalCode": "95125",
-                "country": "US" # [CRITICAL] This fixes Item.Country error
+                "country": "US" # [필수] 국가 코드
             }
         },
-        "locationInstructions": "Ships from main warehouse",
+        "locationInstructions": "Ships within 24 hours",
         "merchantLocationStatus": "ENABLED",
         "locationTypes": ["STORE"]
     }
 
-    # 2. Call API to Create/Update Location
+    # 생성/업데이트 시도
     try:
-        # We try to create it. If it exists, eBay usually updates it or returns success.
+        print(f">>> Creating/Updating Location: {merchant_location_key}")
         await ebay_post(
             db=db,
             user=user,
@@ -80,12 +77,12 @@ async def _ensure_merchant_location(db: Session, user: User):
             json=location_payload
         )
     except Exception as e:
-        print(f"Warning during location check: {e}")
+        print(f">>> Warning: Location creation error: {e}")
 
     return merchant_location_key
 
 # --------------------------------------
-# Sandbox Inventory View
+# Sandbox Inventory 조회
 # --------------------------------------
 @router.get("/ebay/inventory")
 async def ebay_inventory(
@@ -105,7 +102,7 @@ async def ebay_inventory(
     return resp.json()
 
 # --------------------------------------
-# Publish to eBay (Main Logic)
+# 실제 Publish — eBay
 # --------------------------------------
 @router.post("/ebay/{listing_id}/publish")
 async def publish_to_ebay(
@@ -115,20 +112,24 @@ async def publish_to_ebay(
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
 
-    # 1. Determine SKU (Sanitize input to avoid URL errors)
-    raw_sku = listing.sku if (listing.sku and listing.sku.strip()) else f"USER{current_user.id}-LISTING{listing.id}"
-    # Replace slashes/spaces which break URL paths like /inventory_item/1/001
-    sku = raw_sku.strip().replace("/", "-").replace("\\", "-").replace(" ", "-")
+    # 1. [FIX] SKU 안전하게 만들기 (Error 2002 해결)
+    # 공백이나 특수문자가 있으면 URL 에러가 나므로 제거합니다.
+    if listing.sku and listing.sku.strip():
+        raw_sku = listing.sku.strip()
+    else:
+        raw_sku = f"USER{current_user.id}-LISTING{listing.id}"
+    
+    # URL에 들어갈 수 없는 문자 제거 (공백, 슬래시 등)
+    sku = raw_sku.replace(" ", "-").replace("/", "-").replace("\\", "-")
+    print(f">>> Publishing SKU: {sku}")
 
     title = getattr(listing, "title", "Untitled")
     description = getattr(listing, "description", "No description") or "No description"
     price = float(getattr(listing, "price", 0) or 0)
     quantity = 1 
-    
-    # Sandbox Test Category (Consumer Electronics/Smartphones)
-    ebay_category_id = "11450"
+    ebay_category_id = "11450" 
 
-    # 2. Condition Mapping
+    # 2. Condition 매핑
     ebay_condition = "NEW"
     if listing.condition:
         c = listing.condition.lower()
@@ -137,28 +138,17 @@ async def publish_to_ebay(
         elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
         elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
 
-    # Image Handling
-    image_urls = []
-    raw_images = getattr(listing, "image_urls", []) or []
-    
-    # NOTE: Localhost URLs (http://127.0.0.1...) will cause eBay errors.
-    # Only include images if they are hosted publicly (S3, Cloudinary, etc.)
-    if isinstance(raw_images, list):
-        for img in raw_images:
-            if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
-                image_urls.append(img)
-
-    # 3. [FIX] Ensure Merchant Location Exists (Solves Error 25002)
+    # 3. [FIX] 배송지 생성 (Error 25002 해결)
     merchant_location_key = await _ensure_merchant_location(db, current_user)
 
-    # 4. Create Inventory Item (PUT)
+    # 4. Inventory Item 생성 (PUT)
     inventory_payload = {
         "sku": sku,
-        "locale": "en_US", # [FIX] Required for Error 25702
+        "locale": "en_US", # [필수] Error 25702 해결
         "product": {
             "title": title,
             "description": description,
-            # "imageUrls": image_urls # Uncomment only if using public URLs
+            # "imageUrls": [...] # 실제 URL만 가능
         },
         "condition": ebay_condition,
         "availability": {
@@ -169,22 +159,26 @@ async def publish_to_ebay(
     }
 
     try:
+        # SKU를 URL 인코딩하여 전송 (특수문자 처리)
+        encoded_sku = quote(sku)
         inv_resp = await ebay_put(
             db=db,
             user=current_user,
-            path=f"/sell/inventory/v1/inventory_item/{sku}",
+            path=f"/sell/inventory/v1/inventory_item/{encoded_sku}",
             json=inventory_payload,
         )
     except EbayAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # [중요] 여기서 실패하면 뒤로 넘어가지 않음
     if inv_resp.status_code not in (200, 201, 204):
+        print(f">>> Inventory Creation Failed: {inv_resp.text}")
         raise HTTPException(
             status_code=400, 
-            detail={"message": "Failed to create Inventory Item", "ebay_resp": inv_resp.text}
+            detail={"message": "Failed to create Inventory Item", "ebay_resp": inv_resp.json()}
         )
 
-    # 5. Create Offer (POST)
+    # 5. Offer 생성 (POST)
     offer_payload = {
         "sku": sku,
         "marketplaceId": "EBAY_US",
@@ -192,7 +186,7 @@ async def publish_to_ebay(
         "availableQuantity": quantity,
         "categoryId": str(ebay_category_id),
         "listingDescription": description,
-        "merchantLocationKey": merchant_location_key, # [FIX] Links offer to location
+        "merchantLocationKey": merchant_location_key, # [필수] 생성한 키 사용
         "pricingSummary": {
             "price": {
                 "currency": "USD",
@@ -212,7 +206,7 @@ async def publish_to_ebay(
     if offer_resp.status_code in (200, 201):
         offer_id = offer_resp.json().get("offerId")
     else:
-        # Check if offer already exists and reuse it
+        # 이미 존재하면 재사용
         try:
             body = offer_resp.json()
             for err in body.get("errors", []):
@@ -223,9 +217,10 @@ async def publish_to_ebay(
         except: pass
         
         if not offer_id:
-             raise HTTPException(status_code=400, detail=f"Offer creation failed: {offer_resp.text}")
+             print(f">>> Offer Creation Failed: {offer_resp.text}")
+             raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": offer_resp.json()})
 
-    # 6. Publish Offer (POST)
+    # 6. Publish (POST)
     publish_resp = await ebay_post(
         db=db,
         user=current_user,
@@ -237,9 +232,10 @@ async def publish_to_ebay(
     if publish_resp.status_code in (200, 201):
         ebay_listing_id = publish_resp.json().get("listingId")
     else:
-        raise HTTPException(status_code=400, detail=f"Publish failed: {publish_resp.text}")
+        print(f">>> Publish Failed: {publish_resp.text}")
+        raise HTTPException(status_code=400, detail={"message": "Publish failed", "ebay_resp": publish_resp.json()})
 
-    # 7. Update DB
+    # 7. DB 업데이트
     lm = db.query(ListingMarketplace).filter(
         ListingMarketplace.listing_id == listing.id,
         ListingMarketplace.marketplace == "ebay"
@@ -318,7 +314,6 @@ async def ebay_oauth_callback(request: Request, db: Session = Depends(get_db)):
     account.refresh_token = token_json.get("refresh_token")
     account.token_expires_at = datetime.utcnow() + timedelta(seconds=int(token_json.get("expires_in", 7200)))
     db.commit()
-    
     return HTMLResponse(content="<html><body><p>eBay Connected! Close this window.</p><script>window.close();</script></body></html>")
 
 @router.get("/ebay/status")
