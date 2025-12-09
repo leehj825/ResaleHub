@@ -19,8 +19,10 @@ class _NewListingScreenState extends State<NewListingScreen> {
   final _priceController = TextEditingController();
   final _skuController = TextEditingController(); // [추가] SKU 입력용
 
-  // [추가] 상태(Condition) 선택용 변수
+  // [추가] 상태(Condition) 선택용 기본값
   String _selectedCondition = 'Used'; 
+  
+  // eBay Condition과 매핑될 옵션들
   final List<String> _conditionOptions = [
     'New',
     'Like New',
@@ -42,6 +44,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
     });
 
     try {
+      // 파일 선택기 실행 (다중 선택 가능)
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: true,
         type: FileType.image,
@@ -54,20 +57,14 @@ class _NewListingScreenState extends State<NewListingScreen> {
               .map((f) => File(f.path!))
               .toList();
         });
-      } else {
-        // 선택 취소
-        debugPrint('User canceled picking files');
       }
-    } catch (e, st) {
-      debugPrint('File picker error: $e');
-      debugPrint(st.toString());
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to open file picker: $e';
+        _error = 'Failed to pick images: $e';
       });
     }
   }
-
 
   Future<void> _save() async {
     setState(() {
@@ -78,14 +75,14 @@ class _NewListingScreenState extends State<NewListingScreen> {
     try {
       final price = double.tryParse(_priceController.text.trim()) ?? 0.0;
 
-      // 1) Listing 생성 (SKU, Condition 포함)
+      // 1) Listing 생성 요청 (SKU, Condition 포함)
       final listing = await _listingService.createListing(
         title: _titleController.text.trim(),
         description: _descriptionController.text.trim().isEmpty
             ? null
             : _descriptionController.text.trim(),
         price: price,
-        // [추가] 입력된 SKU와 선택된 Condition 전달
+        // 입력된 SKU가 없으면 null을 보내 백엔드에서 자동 생성하게 함
         sku: _skuController.text.trim().isEmpty ? null : _skuController.text.trim(),
         condition: _selectedCondition,
       );
@@ -96,7 +93,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
       }
 
       if (!mounted) return;
-      // ListingsScreen으로 listing을 넘겨서 reload 트리거
+      // 목록 화면으로 돌아가면서 생성된 객체 전달 (목록 새로고침용)
       Navigator.of(context).pop<Listing>(listing);
     } catch (e) {
       if (!mounted) return;
@@ -116,7 +113,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     _priceController.dispose();
-    _skuController.dispose(); // [추가] 해제
+    _skuController.dispose();
     super.dispose();
   }
 
@@ -128,24 +125,33 @@ class _NewListingScreenState extends State<NewListingScreen> {
       appBar: AppBar(
         title: const Text('New Listing'),
       ),
-      body: SingleChildScrollView( // 스크롤 가능하게 변경
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Title
             TextField(
               controller: _titleController,
-              decoration: const InputDecoration(labelText: 'Title'),
+              decoration: const InputDecoration(
+                labelText: 'Title',
+                hintText: 'e.g., Samsung Galaxy S25',
+              ),
             ),
             const SizedBox(height: 12),
             
+            // Description
             TextField(
               controller: _descriptionController,
               maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Description'),
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                hintText: 'Describe the item condition, features, etc.',
+              ),
             ),
             const SizedBox(height: 12),
             
+            // Price & SKU Row
             Row(
               children: [
                 Expanded(
@@ -156,18 +162,20 @@ class _NewListingScreenState extends State<NewListingScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // [추가] SKU 입력 필드
                 Expanded(
                   child: TextField(
                     controller: _skuController,
-                    decoration: const InputDecoration(labelText: 'SKU (Optional)'),
+                    decoration: const InputDecoration(
+                      labelText: 'SKU (Optional)',
+                      hintText: 'Auto-generated if empty',
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
 
-            // [추가] Condition 드롭다운
+            // Condition Dropdown
             DropdownButtonFormField<String>(
               value: _selectedCondition,
               decoration: const InputDecoration(labelText: 'Condition'),
@@ -188,7 +196,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
 
             const SizedBox(height: 24),
 
-            // 이미지 선택 버튼 + 개수 표시
+            // Image Picker
             Row(
               children: [
                 ElevatedButton.icon(
@@ -209,7 +217,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
               ],
             ),
 
-            // 선택된 이미지 미리보기 (작게)
+            // Image Preview (Horizontal Scroll)
             if (_selectedImages.isNotEmpty) ...[
               const SizedBox(height: 10),
               SizedBox(
@@ -220,11 +228,14 @@ class _NewListingScreenState extends State<NewListingScreen> {
                   itemBuilder: (context, index) {
                     return Padding(
                       padding: const EdgeInsets.only(right: 8.0),
-                      child: Image.file(
-                        _selectedImages[index],
-                        width: 80,
-                        height: 80,
-                        fit: BoxFit.cover,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.file(
+                          _selectedImages[index],
+                          width: 80,
+                          height: 80,
+                          fit: BoxFit.cover,
+                        ),
                       ),
                     );
                   },
@@ -234,6 +245,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
 
             const SizedBox(height: 24),
 
+            // Error Message
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -243,6 +255,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
                 ),
               ),
 
+            // Save Button
             _saving
                 ? const Center(child: CircularProgressIndicator())
                 : SizedBox(
