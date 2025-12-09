@@ -1,5 +1,5 @@
 from typing import List
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote # URL 인코딩 함수
 import base64
 from datetime import datetime, timedelta
 
@@ -46,9 +46,6 @@ def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listi
 # [FIX] eBay Merchant Location 강제 생성 (Error 25002 해결)
 # ---------------------------------------------------------
 async def _ensure_merchant_location(db: Session, user: User):
-    """
-    eBay에 배송 출발지 정보를 등록합니다. 키 이름을 'store_v1'으로 변경하여 충돌을 방지합니다.
-    """
     merchant_location_key = "store_v1" 
     
     location_payload = {
@@ -59,7 +56,7 @@ async def _ensure_merchant_location(db: Session, user: User):
                 "city": "San Jose",
                 "stateOrProvince": "CA",
                 "postalCode": "95125",
-                "country": "US" # [필수] 국가 코드
+                "country": "US"
             }
         },
         "locationInstructions": "Ships within 24 hours",
@@ -67,7 +64,6 @@ async def _ensure_merchant_location(db: Session, user: User):
         "locationTypes": ["STORE"]
     }
 
-    # 생성/업데이트 시도
     try:
         print(f">>> Creating/Updating Location: {merchant_location_key}")
         await ebay_post(
@@ -112,21 +108,20 @@ async def publish_to_ebay(
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
 
-    # 1. [FIX] SKU 안전하게 만들기 (Error 2002 해결)
+    # 1. [FIX] SKU 안전하게 만들기
     if listing.sku and listing.sku.strip():
         raw_sku = listing.sku.strip()
     else:
         raw_sku = f"USER{current_user.id}-LISTING{listing.id}"
     
-    # URL에 들어갈 수 없는 문자 제거 (공백, 슬래시 등)
+    # URL에 들어갈 수 없는 문자 제거
     sku = raw_sku.replace(" ", "-").replace("/", "-").replace("\\", "-")
     print(f">>> Publishing SKU: {sku}")
 
-    # [핵심 수정] 생성/정제된 SKU를 DB(Listing 테이블)에도 저장해야 앱에서 보입니다!
+    # [중요] 생성된 SKU를 DB에 저장 (이 부분이 누락되어 있었음)
     if listing.sku != sku:
         listing.sku = sku
-        db.add(listing) 
-        # db.commit()은 함수 마지막에 수행되므로 여기선 add만 하면 됩니다.
+        db.add(listing) # 나중에 commit 될 때 저장됨
 
     title = getattr(listing, "title", "Untitled")
     description = getattr(listing, "description", "No description") or "No description"
@@ -143,17 +138,27 @@ async def publish_to_ebay(
         elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
         elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
 
-    # 3. [FIX] 배송지 생성 (Error 25002 해결)
+    # 이미지 처리 (유효한 URL만 필터링)
+    image_urls = []
+    raw_images = getattr(listing, "image_urls", []) or []
+    if isinstance(raw_images, list):
+        for img in raw_images:
+            # 로컬호스트(localhost, 127.0.0.1) 이미지는 eBay가 가져갈 수 없어 에러가 나므로 제외합니다.
+            # 실제 배포 환경(S3 등)에서는 정상 작동합니다.
+            if isinstance(img, str) and img.startswith("http") and "localhost" not in img and "127.0.0.1" not in img:
+                image_urls.append(img)
+
+    # 3. [FIX] 배송지 생성
     merchant_location_key = await _ensure_merchant_location(db, current_user)
 
     # 4. Inventory Item 생성 (PUT)
     inventory_payload = {
         "sku": sku,
-        "locale": "en_US", # [필수] Error 25702 해결
+        "locale": "en_US",
         "product": {
             "title": title,
             "description": description,
-            # "imageUrls": [...] # 실제 URL만 가능
+            "imageUrls": image_urls # [수정] 주석 해제 및 필터링된 URL 사용
         },
         "condition": ebay_condition,
         "availability": {
@@ -164,7 +169,6 @@ async def publish_to_ebay(
     }
 
     try:
-        # SKU를 URL 인코딩하여 전송 (특수문자 처리)
         encoded_sku = quote(sku)
         inv_resp = await ebay_put(
             db=db,
@@ -175,7 +179,6 @@ async def publish_to_ebay(
     except EbayAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # [중요] 여기서 실패하면 뒤로 넘어가지 않음
     if inv_resp.status_code not in (200, 201, 204):
         print(f">>> Inventory Creation Failed: {inv_resp.text}")
         raise HTTPException(
@@ -191,7 +194,7 @@ async def publish_to_ebay(
         "availableQuantity": quantity,
         "categoryId": str(ebay_category_id),
         "listingDescription": description,
-        "merchantLocationKey": merchant_location_key, # [필수] 생성한 키 사용
+        "merchantLocationKey": merchant_location_key,
         "pricingSummary": {
             "price": {
                 "currency": "USD",
@@ -225,7 +228,7 @@ async def publish_to_ebay(
              print(f">>> Offer Creation Failed: {offer_resp.text}")
              raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": offer_resp.json()})
         else:
-            # Offer가 이미 있으면 업데이트 시도 (배송지 정보 갱신 등을 위해)
+            # Offer가 이미 있으면 업데이트 시도 (배송지 정보 갱신)
             print(f">>> Offer exists ({offer_id}). Updating...")
             await ebay_put(
                 db=db,
@@ -268,7 +271,7 @@ async def publish_to_ebay(
         base_url = "https://sandbox.ebay.com/itm" if settings.ebay_environment == "sandbox" else "https://www.ebay.com/itm"
         lm.external_url = f"{base_url}/{ebay_listing_id}"
 
-    db.commit() # 여기서 listing.sku 변경사항도 같이 저장됨
+    db.commit() # [중요] 여기서 listing.sku 변경사항도 같이 저장됨
     db.refresh(lm)
 
     return {
