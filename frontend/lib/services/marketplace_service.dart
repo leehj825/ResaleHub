@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import 'package:frontend/models/ebay_item.dart'; // [필수] Step 1에서 만든 모델 임포트
 import 'auth_service.dart';
 
 class MarketplaceService {
@@ -75,19 +76,11 @@ class MarketplaceService {
     }
   }
 
-  /// 🔍 eBay Sandbox Inventory 전체 조회 (디버그용)
+  /// 🔍 eBay Sandbox Inventory 전체 조회
   ///
   /// 백엔드의 GET /marketplaces/ebay/inventory 를 호출해서
-  /// eBay Sell Inventory API 결과(JSON)를 그대로 반환한다.
-  ///
-  /// 반환 예:
-  /// {
-  ///   "inventoryItems": [ ... ],
-  ///   "total": 1,
-  ///   "href": "...",
-  ///   ...
-  /// }
-  Future<Map<String, dynamic>> getEbayInventory() async {
+  /// eBayItem 모델 리스트로 변환하여 반환한다.
+  Future<List<EbayItem>> getEbayInventory() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
     if (token == null) {
@@ -107,6 +100,12 @@ class MarketplaceService {
       throw Exception('Failed to load eBay inventory: ${res.body}');
     }
 
-    return jsonDecode(res.body) as Map<String, dynamic>;
+    final data = jsonDecode(res.body);
+    
+    // eBay 응답 구조: { "inventoryItems": [ ... ], "total": ... }
+    final List<dynamic> itemsJson = data['inventoryItems'] ?? [];
+
+    // JSON 리스트를 EbayItem 객체 리스트로 변환
+    return itemsJson.map((json) => EbayItem.fromJson(json)).toList();
   }
 }

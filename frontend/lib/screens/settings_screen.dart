@@ -1,6 +1,4 @@
-// pubspec.yaml에 추가했는지 확인
-// url_launcher: ^6.3.0
-// http: ^1.2.0 (버전에 따라 다를 수 있음)
+// lib/screens/settings_screen.dart
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../services/marketplace_service.dart';
 import '../services/auth_service.dart';
+import 'ebay_inventory_screen.dart'; // [추가] 인벤토리 화면 임포트
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -30,27 +29,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadStatus();
   }
 
-  /// 🔍 eBay Sandbox Inventory 조회 (디버그용)
-  Future<void> _checkEbayInventory() async {
-    try {
-      final data = await _marketplaceService.getEbayInventory();
-      // 콘솔에 전체 JSON 출력
-      // (필요하면 여기서 다이얼로그나 새로운 화면으로 보여줘도 됨)
-      // ignore: avoid_print
-      print('eBay inventory: $data');
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Fetched eBay inventory. Check console log.'),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load eBay inventory: $e')),
-      );
-    }
+  /// [수정됨] eBay 인벤토리 화면으로 이동
+  void _openEbayInventory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const EbayInventoryScreen(),
+      ),
+    );
   }
 
   Future<void> _loadStatus() async {
@@ -81,8 +66,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final url = await _marketplaceService.getEbayConnectUrl();
       final uri = Uri.parse(url);
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-      // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
+      
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
+      } else {
+        throw Exception('Could not launch $url');
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -132,6 +122,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           content: SingleChildScrollView(
             child: Text(res.body),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
         ),
       );
     } catch (e) {
@@ -152,10 +148,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('eBay 연결 상태', style: theme.textTheme.titleMedium),
+            Text('eBay Connection', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             if (_loadingStatus)
-              const CircularProgressIndicator()
+              const Center(child: CircularProgressIndicator())
             else if (_error != null)
               Text(
                 'Error: $_error',
@@ -175,43 +171,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _ebayConnected ? 'Connected' : 'Not connected',
                     style: theme.textTheme.bodyLarge,
                   ),
-                  const Spacer(),
-
-                  // 연결 안 됐을 때: Connect만
-                  if (!_ebayConnected)
-                    TextButton(
-                      onPressed: _connectEbay,
-                      child: const Text('Connect'),
-                    ),
-
-                  // 연결 됐을 때: Disconnect + Re-connect
-                  if (_ebayConnected) ...[
-                    TextButton(
-                      onPressed: _disconnectEbay,
-                      child: const Text('Disconnect'),
-                    ),
-                    TextButton(
-                      onPressed: _connectEbay,
-                      child: const Text('Re-connect'),
-                    ),
-                  ],
                 ],
               ),
+            
             const SizedBox(height: 16),
-            TextButton(
-              onPressed: _loadStatus,
-              child: const Text('Refresh status'),
+            
+            // 연결 상태에 따른 버튼들
+            Row(
+              children: [
+                if (!_ebayConnected)
+                  ElevatedButton(
+                    onPressed: _connectEbay,
+                    child: const Text('Connect eBay'),
+                  ),
+                if (_ebayConnected) ...[
+                  OutlinedButton(
+                    onPressed: _disconnectEbay,
+                    child: const Text('Disconnect'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _connectEbay,
+                    child: const Text('Re-connect'),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: _testEbayApi,
-              child: const Text('Test eBay API'),
-            ),
-            const SizedBox(height: 16),
-            // 🔍 eBay 인벤토리 조회 버튼
-            TextButton(
-              onPressed: _checkEbayInventory,
-              child: const Text('Check eBay Inventory'),
+
+            const Divider(height: 32),
+
+            Text('Tools', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.refresh),
+                  label: const Text('Refresh Status'),
+                  onPressed: _loadStatus,
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.api),
+                  label: const Text('Test API (Log)'),
+                  onPressed: _testEbayApi,
+                ),
+                // [수정됨] 인벤토리 화면으로 이동하는 버튼
+                ActionChip(
+                  avatar: const Icon(Icons.inventory_2_outlined),
+                  label: const Text('eBay Sandbox Inventory'),
+                  onPressed: _openEbayInventory,
+                ),
+              ],
             ),
           ],
         ),
