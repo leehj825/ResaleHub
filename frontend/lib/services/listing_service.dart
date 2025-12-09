@@ -14,7 +14,7 @@ class ListingService {
   final _authService = AuthService();
 
   // ---------------------------
-  // 내 Listings 가져오기
+  // Get My Listings
   // ---------------------------
   Future<List<Listing>> getMyListings() async {
     final baseUrl = _authService.baseUrl;
@@ -42,19 +42,19 @@ class ListingService {
   }
 
   // ---------------------------
-  // Listing 생성 (Import 파라미터 추가)
+  // Create Listing (Updated with thumbnailUrl)
   // ---------------------------
   Future<Listing> createListing({
     required String title,
     String? description,
     required double price,
     String currency = 'USD',
-    // [추가된 파라미터들]
     String? sku,
     String? condition,
-    String? importFrom,      // 'ebay'
-    String? importExternalId,// Item ID
-    String? importUrl,       // URL
+    String? importFrom,
+    String? importExternalId,
+    String? importUrl,
+    String? thumbnailUrl, // [FIX] Added parameter
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -74,6 +74,7 @@ class ListingService {
       'import_from_marketplace': importFrom,
       'import_external_id': importExternalId,
       'import_url': importUrl,
+      'thumbnail_url': thumbnailUrl, // [FIX] Added to body
     };
 
     final res = await http.post(
@@ -94,7 +95,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // Listing 수정
+  // Update Listing
   // ---------------------------
   Future<Listing> updateListing(
     int listingId, {
@@ -141,7 +142,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // Listing 삭제
+  // Delete Listing
   // ---------------------------
   Future<void> deleteListing(int listingId) async {
     final baseUrl = _authService.baseUrl;
@@ -165,7 +166,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // 이미지 업로드
+  // Upload Images
   // ---------------------------
   Future<void> uploadImages(int listingId, List<File> files) async {
     final baseUrl = _authService.baseUrl;
@@ -199,7 +200,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // 이미지 목록 가져오기
+  // Get Listing Images
   // ---------------------------
   Future<List<String>> getListingImages(int listingId) async {
     final baseUrl = _authService.baseUrl;
@@ -225,7 +226,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // 개별 이미지 삭제
+  // Delete Listing Image
   // ---------------------------
   Future<void> deleteListingImage(int listingId, String imageUrl) async {
     final baseUrl = _authService.baseUrl;
@@ -251,7 +252,7 @@ class ListingService {
   }
 
   // ---------------------------
-  // eBay 연동
+  // Publish to eBay
   // ---------------------------
   Future<void> publishToEbay(int listingId) async {
     final baseUrl = _authService.baseUrl;
@@ -316,7 +317,6 @@ class ListingService {
     return data.map((e) => e.toString()).toList();
   }
 
-  // [추가] 단일 리스팅 상세 조회 (새로고침용)
   Future<Listing> getListing(int id) async {
     final token = await _authService.getToken();
     final baseUrl = _authService.baseUrl;

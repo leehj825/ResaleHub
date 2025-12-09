@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:frontend/models/ebay_item.dart';
 import 'package:frontend/services/marketplace_service.dart';
 import 'package:frontend/services/listing_service.dart';
-import 'package:frontend/screens/ebay_item_detail_screen.dart'; // [필수] 상세화면 임포트
+import 'package:frontend/screens/ebay_item_detail_screen.dart'; 
 
 class EbayInventoryScreen extends StatefulWidget {
   const EbayInventoryScreen({super.key});
@@ -13,7 +13,7 @@ class EbayInventoryScreen extends StatefulWidget {
 
 class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
   final MarketplaceService _marketplaceService = MarketplaceService();
-  final ListingService _listingService = ListingService(); // Import용 서비스
+  final ListingService _listingService = ListingService(); 
   
   List<EbayItem> _items = [];
   bool _isLoading = true;
@@ -47,9 +47,8 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
     }
   }
 
-  // [수정됨] eBay 아이템을 내 앱 인벤토리로 가져오기 (SKU, Condition, ImportFrom 전달)
+  // [FIX] Passes image URL to createListing
   Future<void> _importItemToApp(EbayItem item) async {
-    // 확인 팝업
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -65,19 +64,17 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
     if (confirm != true) return;
 
     try {
-      // 1. eBay 정보를 바탕으로 로컬 Listing 객체 생성
       await _listingService.createListing(
         title: item.title,
         description: item.description.isNotEmpty 
             ? item.description 
             : "Imported from eBay SKU: ${item.sku}",
-        price: 0.0, // Inventory API에는 가격 정보가 없을 수 있어 0으로 처리 (필요시 수정)
+        price: 0.0, 
         currency: "USD",
-        
-        // [중요] Import 관련 정보 전달
         sku: item.sku,
         condition: item.condition,
-        importFrom: 'ebay', // 백엔드에서 이를 보고 ListingMarketplace(status='published') 생성
+        importFrom: 'ebay', 
+        thumbnailUrl: item.imageUrl, // [FIX] Passing the image URL here
       );
 
       if (!mounted) return;
@@ -154,7 +151,6 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
           child: ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             onTap: () {
-              // 상세 화면으로 이동
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => EbayItemDetailScreen(item: item),
@@ -180,7 +176,7 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
             trailing: IconButton(
               icon: const Icon(Icons.download, color: Colors.blue),
               tooltip: "Import to App",
-              onPressed: () => _importItemToApp(item), // [Import 버튼]
+              onPressed: () => _importItemToApp(item), 
             ),
           ),
         );
