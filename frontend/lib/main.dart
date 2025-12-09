@@ -1,21 +1,49 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'screens/login_screen.dart';
+import 'package:window_manager/window_manager.dart'; // [필수] import
 
-void main() {
-  runApp(const ResaleHubApp());
+import 'screens/login_screen.dart'; 
+// ... 기타 import ...
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // [macOS/Windows/Linux] 데스크톱 앱 창 크기 설정 (Galaxy S25 비율 근사치)
+  if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+    await windowManager.ensureInitialized();
+
+    WindowOptions windowOptions = const WindowOptions(
+      size: Size(400, 850),        // 시작 크기 (가로 400, 세로 850)
+      minimumSize: Size(400, 850), // 최소 크기 고정
+      maximumSize: Size(400, 850), // 최대 크기 고정 (폰 크기 유지)
+      center: true,                // 화면 정중앙 실행
+      backgroundColor: Colors.transparent,
+      skipTaskbar: false,
+      titleBarStyle: TitleBarStyle.normal,
+    );
+
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
+
+  runApp(const MyApp());
 }
 
-class ResaleHubApp extends StatelessWidget {
-  const ResaleHubApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ResaleHub AI',
+      debugShowCheckedModeBanner: false,
+      title: 'ResaleHub',
       theme: ThemeData(
         primarySwatch: Colors.blue,
+        useMaterial3: true,
       ),
-      home: const LoginScreen(),
+      home: const LoginScreen(), // 로그인 화면부터 시작
     );
   }
 }

@@ -43,16 +43,25 @@ def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listi
     return listing
 
 # ---------------------------------------------------------
-# [Helper] eBay Merchant Location 생성 (에러 25002 방지용)
+# [핵심] eBay Merchant Location (배송지) 확인 및 생성
 # ---------------------------------------------------------
 async def _ensure_merchant_location(db: Session, user: User):
     """
-    eBay에 'default'라는 이름의 배송 출발지(Location)가 없으면 생성한다.
-    이게 없으면 Offer 생성 시 'Item.Country missing' 에러가 발생함.
+    eBay 판매를 위해서는 반드시 'Merchant Location'이 있어야 합니다.
+    없으면 만들고, 있으면 키를 반환합니다.
     """
-    merchant_location_key = "default"
+    merchant_location_key = "default_warehouse" # 키 이름 변경 (중복 회피)
     
-    # 1. Location 생성 Payload (Sandbox용 더미 주소 - 캘리포니아)
+    # 1. 존재하는지 확인 (GET)
+    try:
+        resp = await ebay_get(db, user, path=f"/sell/inventory/v1/location/{merchant_location_key}")
+        if resp.status_code == 200:
+            print(">>> eBay Merchant Location exists.")
+            return merchant_location_key
+    except Exception as e:
+        print(f">>> Failed to check location, trying to create... {e}")
+
+    # 2. 없으면 생성 (POST) - Sandbox용 주소
     location_payload = {
         "name": "Default Warehouse",
         "location": {
@@ -64,21 +73,23 @@ async def _ensure_merchant_location(db: Session, user: User):
                 "country": "US"
             }
         },
-        "locationInstructions": "Items ship from here",
+        "locationInstructions": "Ships from main warehouse",
         "merchantLocationStatus": "ENABLED",
-        "locationTypes": ["STORE", "WAREHOUSE"]
+        "locationTypes": ["STORE"]
     }
 
-    # 2. Location 생성/업데이트 API 호출
     try:
-        await ebay_post(
+        create_resp = await ebay_post(
             db=db,
             user=user,
             path=f"/sell/inventory/v1/location/{merchant_location_key}",
             json=location_payload
         )
+        if create_resp.status_code not in (200, 204, 201):
+            print(f">>> Error creating location: {create_resp.text}")
+            # 에러가 나도 일단 진행해봄 (기존 키가 있을 수 있음)
     except Exception as e:
-        print(f"Warning: Failed to ensure merchant location: {e}")
+        print(f">>> Exception creating location: {e}")
 
     return merchant_location_key
 
@@ -100,11 +111,6 @@ async def ebay_inventory(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=resp.status_code, 
-            detail={"message": "Failed to fetch inventory", "body": resp.text}
-        )
     return resp.json()
 
 # --------------------------------------
@@ -118,48 +124,51 @@ async def publish_to_ebay(
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
 
-    # 1. [수정됨] SKU 결정 로직 (사용자 입력값 우선, 없으면 자동 생성)
+    # 1. SKU 결정 (입력값 우선 -> 자동생성)
     if listing.sku and listing.sku.strip():
         sku = listing.sku.strip()
     else:
-        sku = f"user{current_user.id}-listing{listing.id}"
+        sku = f"USER{current_user.id}-LISTING{listing.id}"
 
-    title = getattr(listing, "title", None) or "Untitled"
-    description = getattr(listing, "description", "") or "No description"
-    price = getattr(listing, "price", 0)
+    title = getattr(listing, "title", "Untitled")
+    description = getattr(listing, "description", "No description")
+    if not description: description = f"Item {title}"
+    price = float(getattr(listing, "price", 0) or 0)
     quantity = 1 
-    ebay_category_id = "11450" # Test category (Smartphones/Watches etc)
+    
+    # 샌드박스 테스트용 카테고리 (기타 전자제품 등 안전한 카테고리)
+    ebay_category_id = "11450"
 
-    # 2. [수정됨] Condition 매핑 (사용자 입력값 우선)
-    # eBay Enum: NEW, LIKE_NEW, USED_EXCELLENT, USED_VERY_GOOD, USED_GOOD, USED_ACCEPTABLE
+    # 2. Condition 매핑
     ebay_condition = "NEW"
     if listing.condition:
-        cond_str = listing.condition.upper().replace(" ", "_")
-        if "NEW" in cond_str: ebay_condition = "NEW"
-        elif "LIKE" in cond_str: ebay_condition = "LIKE_NEW"
-        elif "GOOD" in cond_str: ebay_condition = "USED_GOOD"
-        elif "USED" in cond_str: ebay_condition = "USED_GOOD"
-        elif "PARTS" in cond_str: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
+        c = listing.condition.lower()
+        if "new" in c: ebay_condition = "NEW"
+        elif "like" in c: ebay_condition = "LIKE_NEW"
+        elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
+        elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
 
-    # 이미지 처리 (localhost 이미지는 eBay가 접근 못하므로 제외하거나 S3 URL 필요)
+    # 이미지 URL 처리
     image_urls = []
     raw_images = getattr(listing, "image_urls", []) or []
+    # (참고: 로컬호스트 이미지는 eBay에서 에러남. 실제 배포 환경 URL이어야 함)
+    # 여기서는 리스트가 있으면 일단 보냄
     if isinstance(raw_images, list):
         for img in raw_images:
             if isinstance(img, str) and img.startswith("http"):
                 image_urls.append(img)
 
-    # 3. [중요] Merchant Location 확인/생성 (25002 에러 해결)
+    # 3. [필수] 배송지 키 확보
     merchant_location_key = await _ensure_merchant_location(db, current_user)
 
     # 4. Inventory Item 생성 (PUT)
     inventory_payload = {
         "sku": sku,
-        "locale": "en_US", # [중요] 25702 에러 해결 (필수)
+        "locale": "en_US", # [필수] 지역 설정
         "product": {
             "title": title,
             "description": description,
-            # "imageUrls": image_urls # 이미지가 유효한 public URL일 때만 주석 해제
+            # "imageUrls": image_urls # 이미지가 유효한 웹 URL일 때만 주석 해제
         },
         "condition": ebay_condition,
         "availability": {
@@ -193,13 +202,14 @@ async def publish_to_ebay(
         "availableQuantity": quantity,
         "categoryId": str(ebay_category_id),
         "listingDescription": description,
-        "merchantLocationKey": merchant_location_key, # [중요] 배송지 키 연결
+        "merchantLocationKey": merchant_location_key, # [필수] 배송지 키
         "pricingSummary": {
             "price": {
                 "currency": "USD",
                 "value": f"{price:.2f}"
             }
         },
+        # 정책이 없으면 샌드박스 기본값 사용 시도
     }
 
     offer_resp = await ebay_post(
@@ -213,7 +223,7 @@ async def publish_to_ebay(
     if offer_resp.status_code in (200, 201):
         offer_id = offer_resp.json().get("offerId")
     else:
-        # 이미 존재하면 재사용 시도
+        # 이미 존재하면 에러 메시지에서 추출
         try:
             body = offer_resp.json()
             for err in body.get("errors", []):
@@ -238,7 +248,7 @@ async def publish_to_ebay(
     if publish_resp.status_code in (200, 201):
         ebay_listing_id = publish_resp.json().get("listingId")
     else:
-        # Publish 에러 상세 출력
+        # Publish 에러
         raise HTTPException(status_code=400, detail=f"Publish failed: {publish_resp.text}")
 
     # 7. DB 업데이트
@@ -270,7 +280,7 @@ async def publish_to_ebay(
     }
 
 # --------------------------------------
-# OAuth (기존 유지)
+# OAuth
 # --------------------------------------
 @router.get("/ebay/connect")
 def ebay_connect(current_user: User = Depends(get_current_user)):
@@ -320,7 +330,6 @@ async def ebay_oauth_callback(request: Request, db: Session = Depends(get_db)):
     account.refresh_token = token_json.get("refresh_token")
     account.token_expires_at = datetime.utcnow() + timedelta(seconds=int(token_json.get("expires_in", 7200)))
     db.commit()
-    
     return HTMLResponse(content="<html><body><p>eBay Connected! Close this window.</p><script>window.close();</script></body></html>")
 
 @router.get("/ebay/status")
@@ -344,7 +353,7 @@ def get_listing_marketplaces(listing_id: int, db: Session = Depends(get_db), cur
 
 @router.post("/poshmark/{listing_id}/publish")
 def publish_to_poshmark(listing_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Dummy implementation for Poshmark
+    # Dummy implementation
     return {"message": "Poshmark publish not implemented yet"}
 
 @router.get("/ebay/me")
