@@ -77,6 +77,39 @@ def _create_dummy_publish(db: Session, listing: Listing, marketplace: str):
 
 
 # --------------------------------------
+# [수정됨] Sandbox Inventory 조회 (디버깅용)
+# --------------------------------------
+@router.get("/ebay/inventory")
+async def ebay_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        # [수정] limit=100 추가하여 페이징 문제 해결 (기본값은 20개)
+        resp = await ebay_get(
+            db=db,
+            user=current_user,
+            path="/sell/inventory/v1/inventory_item",
+            params={"limit": "100", "offset": "0"} 
+        )
+    except Exception as e:
+        print(f"Error calling ebay_get: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # [디버깅] 서버 로그에 eBay 응답 출력
+    # Render 로그에서 "eBay Inventory Response" 검색해서 확인 가능
+    print(f"eBay Inventory Response ({resp.status_code}): {resp.text[:500]}...")
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code, 
+            detail={"message": "Failed to fetch inventory", "body": resp.text}
+        )
+
+    return resp.json()
+
+
+# --------------------------------------
 # 실제 Publish — eBay (Sandbox 기준)
 # Inventory Item → Offer → Publish
 # --------------------------------------
@@ -224,26 +257,6 @@ async def publish_to_ebay(
         "listing_id": ebay_listing_id,
         "url": lm.external_url
     }
-
-
-# --------------------------------------
-# Sandbox Inventory 조회 (디버깅용)
-# --------------------------------------
-@router.get("/ebay/inventory")
-async def ebay_inventory(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        resp = await ebay_get(
-            db=db,
-            user=current_user,
-            path="/sell/inventory/v1/inventory_item",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return resp.json()
 
 
 # --------------------------------------

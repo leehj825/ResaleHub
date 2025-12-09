@@ -1,7 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload # [추가] 관계 데이터를 로딩하기 위해 필요
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -20,6 +20,7 @@ def _attach_thumbnail(listing: Listing) -> ListingRead:
     SQLAlchemy Listing 객체를 ListingRead로 변환하면서
     대표 이미지(thumbnail_url)를 붙여주는 헬퍼 함수.
     """
+    # model_validate를 호출할 때, 이미 로딩된 marketplace_links 정보도 같이 변환됩니다.
     data = ListingRead.model_validate(listing)
 
     # Listing.images 관계에 이미지가 있으면 첫 번째 것을 썸네일로 사용
@@ -39,6 +40,9 @@ def list_listings(
     listings = (
         db.query(Listing)
         .filter(Listing.owner_id == current_user.id)
+        # [중요] 이미지와 마켓플레이스 연동 정보를 함께 가져옵니다.
+        .options(selectinload(Listing.images))
+        .options(selectinload(Listing.marketplace_links))
         .order_by(Listing.created_at.desc())
         .all()
     )
@@ -74,6 +78,9 @@ def _get_owned_listing_or_404(
 ) -> Listing:
     listing = (
         db.query(Listing)
+        # [중요] 단일 조회 시에도 연동 정보를 반드시 로딩해야 합니다.
+        .options(selectinload(Listing.images))
+        .options(selectinload(Listing.marketplace_links))
         .filter(
             Listing.id == listing_id,
             Listing.owner_id == current_user.id,

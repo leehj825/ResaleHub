@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart'; // [필수] 브라우저 열기용 패키지
+import 'package:flutter/services.dart'; // [필수] 클립보드 사용을 위해 추가
+import 'package:url_launcher/url_launcher.dart';
 import 'package:frontend/models/listing.dart';
 import 'package:frontend/services/auth_service.dart';
 import 'package:frontend/services/listing_service.dart' as ls;
@@ -31,7 +32,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
   // 상태 변경 중 여부
   bool _updatingStatus = false;
-  bool _publishing = false; // [추가] 발행 중 로딩 표시
+  bool _publishing = false; 
 
   final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
@@ -40,7 +41,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     super.initState();
     _listing = widget.listing;
     _loadImages();
-    // 기존 _loadMarketplaces()는 더 이상 필요 없음 (Listing 모델 안에 정보가 있음)
   }
 
   Future<void> _loadImages() async {
@@ -77,7 +77,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         _listing = updated;
       });
     } catch (e) {
-      // 리로드 실패 시 조용히 넘어가거나 로그 출력
       debugPrint('Failed to reload listing: $e');
     }
   }
@@ -196,7 +195,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Published to eBay successfully!')),
       );
-      // URL 등을 확인하기 위해 리스팅 정보 갱신
       await _reloadListing();
     } catch (e) {
       if (!mounted) return;
@@ -227,17 +225,47 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
-  /// [UI] 마켓플레이스 섹션 빌더
+  // --- [UI Helper] 상세 정보 한 줄 (복사 기능 포함) ---
+  Widget _buildDetailRow(String label, String value, {bool copyable = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 70,
+            child: Text(label, style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.w500, fontSize: 13)),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          ),
+          if (copyable)
+            InkWell(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: value));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('$label copied!'), duration: const Duration(seconds: 1)),
+                );
+              },
+              child: const Padding(
+                padding: EdgeInsets.only(left: 8.0),
+                child: Icon(Icons.copy, size: 16, color: Colors.grey),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// [UI] 마켓플레이스 섹션 빌더 (카드 형태)
   Widget _buildMarketplaceSection() {
-    // 1. eBay 정보 찾기
+    // 1. eBay 정보
     final ebayInfo = _listing.marketplaces.firstWhere(
       (m) => m.marketplace == 'ebay',
       orElse: () => MarketplaceInfo(marketplace: '', status: ''),
     );
-    // URL이 있으면 "이미 발행됨"으로 간주
     bool isEbayPublished = ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty;
 
-    // 2. Poshmark 정보 찾기 (예시)
+    // 2. Poshmark 정보
     final poshInfo = _listing.marketplaces.firstWhere(
       (m) => m.marketplace == 'poshmark',
       orElse: () => MarketplaceInfo(marketplace: '', status: ''),
@@ -251,7 +279,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
           "Marketplaces",
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
 
         if (_publishing)
           const Padding(
@@ -259,12 +287,52 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             child: Center(child: CircularProgressIndicator()),
           ),
 
-        Row(
-          children: [
-            // --- eBay Button ---
-            Expanded(
-              child: isEbayPublished
-                  ? ElevatedButton.icon(
+        // --- eBay Card ---
+        Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.shopping_bag_outlined, color: Colors.blue),
+                    const SizedBox(width: 8),
+                    const Text("eBay", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: isEbayPublished ? Colors.green.shade100 : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        isEbayPublished ? "Published" : "Not Listed",
+                        style: TextStyle(
+                          color: isEbayPublished ? Colors.green.shade800 : Colors.grey.shade800,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                
+                if (isEbayPublished) ...[
+                  const Divider(height: 24),
+                  // 상세 정보 표시 (ID, SKU, OfferID)
+                  if (ebayInfo.externalItemId != null)
+                    _buildDetailRow("Item ID", ebayInfo.externalItemId!, copyable: true),
+                  if (ebayInfo.sku != null)
+                    _buildDetailRow("SKU", ebayInfo.sku!, copyable: true),
+                  if (ebayInfo.offerId != null)
+                    _buildDetailRow("Offer ID", ebayInfo.offerId!, copyable: true),
+                  
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
                       onPressed: () async {
                         final uri = Uri.parse(ebayInfo.listingUrl!);
                         if (await canLaunchUrl(uri)) {
@@ -277,41 +345,46 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                         }
                       },
                       icon: const Icon(Icons.open_in_new, color: Colors.white),
-                      label: const Text("View eBay"),
+                      label: const Text("View on eBay Sandbox"),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
                       ),
-                    )
-                  : OutlinedButton.icon(
+                    ),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
                       onPressed: _publishing ? null : _publishToEbay,
-                      icon: const Icon(Icons.shopping_bag_outlined),
-                      label: const Text("List on eBay"),
+                      icon: const Icon(Icons.upload),
+                      label: const Text("Publish to eBay"),
                     ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 8),
+          ),
+        ),
 
-            // --- Poshmark Button ---
-            Expanded(
-              child: isPoshPublished
-                  ? ElevatedButton.icon(
-                      onPressed: () {
-                        // Poshmark URL이 있다면 여기서 launchUrl
-                      },
-                      icon: const Icon(Icons.check),
-                      label: const Text("Poshmark"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.grey, // 비활성 느낌
-                        foregroundColor: Colors.white,
-                      ),
-                    )
-                  : OutlinedButton.icon(
-                      onPressed: _publishing ? null : _publishToPoshmark,
-                      icon: const Icon(Icons.style_outlined),
-                      label: const Text("List Posh"),
-                    ),
-            ),
-          ],
+        const SizedBox(height: 16),
+
+        // --- Poshmark Card (간단 버전) ---
+        Card(
+          elevation: 1,
+          color: Colors.grey.shade50,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: ListTile(
+            leading: const Icon(Icons.style_outlined, color: Colors.pinkAccent),
+            title: const Text("Poshmark"),
+            trailing: isPoshPublished
+                ? const Icon(Icons.check_circle, color: Colors.green)
+                : OutlinedButton(
+                    onPressed: _publishing ? null : _publishToPoshmark,
+                    child: const Text("List"),
+                  ),
+          ),
         ),
       ],
     );
@@ -495,7 +568,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             const Divider(),
             const SizedBox(height: 16),
 
-            // [수정된 부분] 마켓플레이스 섹션 (View 버튼 포함)
+            // [수정된 부분] 마켓플레이스 섹션 (View 버튼 + 상세정보 포함)
             _buildMarketplaceSection(),
             
             const SizedBox(height: 40),
