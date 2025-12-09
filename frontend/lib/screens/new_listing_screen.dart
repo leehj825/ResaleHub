@@ -17,6 +17,16 @@ class _NewListingScreenState extends State<NewListingScreen> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _priceController = TextEditingController();
+  final _skuController = TextEditingController(); // [추가] SKU 입력용
+
+  // [추가] 상태(Condition) 선택용 변수
+  String _selectedCondition = 'Used'; 
+  final List<String> _conditionOptions = [
+    'New',
+    'Like New',
+    'Used',
+    'For Parts'
+  ];
 
   bool _saving = false;
   String? _error;
@@ -68,13 +78,16 @@ class _NewListingScreenState extends State<NewListingScreen> {
     try {
       final price = double.tryParse(_priceController.text.trim()) ?? 0.0;
 
-      // 1) 우선 Listing JSON으로 생성
+      // 1) Listing 생성 (SKU, Condition 포함)
       final listing = await _listingService.createListing(
         title: _titleController.text.trim(),
         description: _descriptionController.text.trim().isEmpty
             ? null
             : _descriptionController.text.trim(),
         price: price,
+        // [추가] 입력된 SKU와 선택된 Condition 전달
+        sku: _skuController.text.trim().isEmpty ? null : _skuController.text.trim(),
+        condition: _selectedCondition,
       );
 
       // 2) 이미지가 선택되어 있다면 업로드
@@ -103,6 +116,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     _priceController.dispose();
+    _skuController.dispose(); // [추가] 해제
     super.dispose();
   }
 
@@ -114,35 +128,73 @@ class _NewListingScreenState extends State<NewListingScreen> {
       appBar: AppBar(
         title: const Text('New Listing'),
       ),
-      body: Padding(
+      body: SingleChildScrollView( // 스크롤 가능하게 변경
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
               controller: _titleController,
               decoration: const InputDecoration(labelText: 'Title'),
             ),
             const SizedBox(height: 12),
+            
             TextField(
               controller: _descriptionController,
               maxLines: 3,
               decoration: const InputDecoration(labelText: 'Description'),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _priceController,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Price (USD)'),
+            
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _priceController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Price (USD)'),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                // [추가] SKU 입력 필드
+                Expanded(
+                  child: TextField(
+                    controller: _skuController,
+                    decoration: const InputDecoration(labelText: 'SKU (Optional)'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
+
+            // [추가] Condition 드롭다운
+            DropdownButtonFormField<String>(
+              value: _selectedCondition,
+              decoration: const InputDecoration(labelText: 'Condition'),
+              items: _conditionOptions.map((String condition) {
+                return DropdownMenuItem<String>(
+                  value: condition,
+                  child: Text(condition),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                if (newValue != null) {
+                  setState(() {
+                    _selectedCondition = newValue;
+                  });
+                }
+              },
+            ),
+
+            const SizedBox(height: 24),
 
             // 이미지 선택 버튼 + 개수 표시
             Row(
               children: [
-                ElevatedButton(
+                ElevatedButton.icon(
                   onPressed: _saving ? null : _pickImages,
-                  child: const Text('Select Photos'),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Select Photos'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -157,23 +209,52 @@ class _NewListingScreenState extends State<NewListingScreen> {
               ],
             ),
 
-            const SizedBox(height: 16),
+            // 선택된 이미지 미리보기 (작게)
+            if (_selectedImages.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 80,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _selectedImages.length,
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8.0),
+                      child: Image.file(
+                        _selectedImages[index],
+                        width: 80,
+                        height: 80,
+                        fit: BoxFit.cover,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 24),
 
             if (_error != null)
-              Text(
-                _error!,
-                style: theme.textTheme.bodyMedium?.copyWith(color: Colors.red),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  _error!,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: Colors.red),
+                ),
               ),
 
-            const SizedBox(height: 8),
-
             _saving
-                ? const CircularProgressIndicator()
+                ? const Center(child: CircularProgressIndicator())
                 : SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: _save,
-                      child: const Text('Save'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        backgroundColor: theme.primaryColor,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Save Listing', style: TextStyle(fontSize: 16)),
                     ),
                   ),
           ],
