@@ -1,5 +1,5 @@
 from typing import List
-from urllib.parse import urlencode, quote # [중요] URL 인코딩 함수
+from urllib.parse import urlencode, quote
 import base64
 from datetime import datetime, timedelta
 
@@ -113,7 +113,6 @@ async def publish_to_ebay(
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
 
     # 1. [FIX] SKU 안전하게 만들기 (Error 2002 해결)
-    # 공백이나 특수문자가 있으면 URL 에러가 나므로 제거합니다.
     if listing.sku and listing.sku.strip():
         raw_sku = listing.sku.strip()
     else:
@@ -122,6 +121,12 @@ async def publish_to_ebay(
     # URL에 들어갈 수 없는 문자 제거 (공백, 슬래시 등)
     sku = raw_sku.replace(" ", "-").replace("/", "-").replace("\\", "-")
     print(f">>> Publishing SKU: {sku}")
+
+    # [핵심 수정] 생성/정제된 SKU를 DB(Listing 테이블)에도 저장해야 앱에서 보입니다!
+    if listing.sku != sku:
+        listing.sku = sku
+        db.add(listing) 
+        # db.commit()은 함수 마지막에 수행되므로 여기선 add만 하면 됩니다.
 
     title = getattr(listing, "title", "Untitled")
     description = getattr(listing, "description", "No description") or "No description"
@@ -219,6 +224,15 @@ async def publish_to_ebay(
         if not offer_id:
              print(f">>> Offer Creation Failed: {offer_resp.text}")
              raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": offer_resp.json()})
+        else:
+            # Offer가 이미 있으면 업데이트 시도 (배송지 정보 갱신 등을 위해)
+            print(f">>> Offer exists ({offer_id}). Updating...")
+            await ebay_put(
+                db=db,
+                user=current_user,
+                path=f"/sell/inventory/v1/offer/{offer_id}",
+                json=offer_payload
+            )
 
     # 6. Publish (POST)
     publish_resp = await ebay_post(
@@ -254,7 +268,7 @@ async def publish_to_ebay(
         base_url = "https://sandbox.ebay.com/itm" if settings.ebay_environment == "sandbox" else "https://www.ebay.com/itm"
         lm.external_url = f"{base_url}/{ebay_listing_id}"
 
-    db.commit()
+    db.commit() # 여기서 listing.sku 변경사항도 같이 저장됨
     db.refresh(lm)
 
     return {
