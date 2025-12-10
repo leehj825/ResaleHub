@@ -134,15 +134,16 @@ async def _create_default_policies(db: Session, user: User):
             "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
             "handlingTime": {
                 "value": 1,
-                "unit": "BUSINESS_DAY"
+                "unit": "DAY"  # eBay expects DAY here
             },
             "shippingOptions": [
                 {
+                    "optionType": "DOMESTIC",  # Required field
                     "costType": "FLAT_RATE",
                     "shippingServices": [
                         {
                             "shippingCarrierCode": "USPS",
-                            "shippingServiceCode": "USPSPriority",
+                            "shippingServiceCode": "USPSPriorityMail",
                             "freeShipping": False
                         }
                     ]
@@ -184,11 +185,7 @@ async def _create_default_policies(db: Session, user: User):
             "name": "Standard Payment",
             "marketplaceId": "EBAY_US",
             "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
-            "paymentMethods": [
-                {
-                    "paymentMethodType": "PAYPAL"
-                }
-            ],
+            # Managed payments: do not specify paymentMethods
             "immediatePay": False
         }
         
