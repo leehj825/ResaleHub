@@ -108,4 +108,26 @@ class MarketplaceService {
     // JSON 리스트를 EbayItem 객체 리스트로 변환
     return itemsJson.map((json) => EbayItem.fromJson(json)).toList();
   }
+
+  /// eBay Inventory item 삭제
+  Future<void> deleteEbayInventoryItem(String sku) async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/inventory/$sku');
+    final res = await http.delete(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode >= 300) {
+      throw Exception('Failed to delete item: ${res.body}');
+    }
+  }
 }

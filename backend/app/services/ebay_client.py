@@ -189,3 +189,22 @@ async def ebay_put(
         params=params,
         json=json,
     )
+
+
+async def ebay_delete(
+    db: Session,
+    user: User,
+    path: str,
+    params: dict | None = None,
+):
+    """
+    eBay REST API DELETE용 래퍼
+    """
+    return await ebay_request(
+        method="DELETE",
+        db=db,
+        user=user,
+        path=path,
+        params=params,
+        json=None,
+    )

@@ -89,6 +89,36 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
     }
   }
 
+  Future<void> _deleteItem(EbayItem item) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Item'),
+        content: Text('Remove "${item.title}" (SKU: ${item.sku}) from eBay inventory?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remove')),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await _marketplaceService.deleteEbayInventoryItem(item.sku);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Item removed from eBay inventory')),
+      );
+      await _loadInventory();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to remove: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -173,10 +203,20 @@ class _EbayInventoryScreenState extends State<EbayInventoryScreen> {
             ),
             title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('SKU: ${item.sku}\nQty: ${item.quantity}'),
-            trailing: IconButton(
-              icon: const Icon(Icons.download, color: Colors.blue),
-              tooltip: "Import to App",
-              onPressed: () => _importItemToApp(item), 
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.download, color: Colors.blue),
+                  tooltip: "Import to App",
+                  onPressed: () => _importItemToApp(item),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  tooltip: "Remove from eBay",
+                  onPressed: () => _deleteItem(item),
+                ),
+              ],
             ),
           ),
         );

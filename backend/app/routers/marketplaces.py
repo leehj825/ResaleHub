@@ -18,7 +18,7 @@ from app.models.listing import Listing
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
-from app.services.ebay_client import ebay_get, ebay_post, ebay_put, EbayAuthError
+from app.services.ebay_client import ebay_get, ebay_post, ebay_put, ebay_delete, EbayAuthError
 
 router = APIRouter(
     prefix="/marketplaces",
@@ -144,7 +144,7 @@ async def _create_default_policies(db: Session, user: User):
                         {
                             "shippingCarrierCode": "USPS",
                             # Use a widely-accepted domestic service for sandbox
-                            "shippingServiceCode": "USPSFirstClass",
+                            "shippingServiceCode": "USPSGroundAdvantage",
                             "freeShipping": False
                         }
                     ]
@@ -171,15 +171,28 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Response: {error_str}")
                 
                 if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
-                    # Try to get existing policies
+                    try:
+                        existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
+                        if existing.status_code == 200:
+                            existing_policies = existing.json().get("fulfillmentPolicies", [])
+                            if existing_policies:
+                                policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
+                                print(f">>> Using existing fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+                    except Exception as e:
+                        print(f">>> Error reading existing fulfillment policies: {e}")
+            except Exception as e:
+                print(f">>> Error processing fulfillment policy response: {e}")
+            # Fallback: if creation failed for any reason, try to reuse first existing policy
+            if "fulfillmentPolicyId" not in policies_created:
+                try:
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("fulfillmentPolicies", [])
                         if existing_policies:
                             policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
-                            print(f">>> Using existing fulfillment policy: {policies_created['fulfillmentPolicyId']}")
-            except Exception as e:
-                print(f">>> Error processing fulfillment policy response: {e}")
+                            print(f">>> Using fallback fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+                except Exception as e:
+                    print(f">>> Error during fulfillment policy fallback: {e}")
         
         # Create Payment Policy
         payment_payload = {
@@ -208,14 +221,27 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Response: {error_str}")
                 
                 if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
+                    try:
+                        existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
+                        if existing.status_code == 200:
+                            existing_policies = existing.json().get("paymentPolicies", [])
+                            if existing_policies:
+                                policies_created["paymentPolicyId"] = existing_policies[0].get("paymentPolicyId")
+                                print(f">>> Using existing payment policy: {policies_created['paymentPolicyId']}")
+                    except Exception as e:
+                        print(f">>> Error reading existing payment policies: {e}")
+            except Exception as e:
+                print(f">>> Error processing payment policy response: {e}")
+            if "paymentPolicyId" not in policies_created:
+                try:
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("paymentPolicies", [])
                         if existing_policies:
                             policies_created["paymentPolicyId"] = existing_policies[0].get("paymentPolicyId")
-                            print(f">>> Using existing payment policy: {policies_created['paymentPolicyId']}")
-            except Exception as e:
-                print(f">>> Error processing payment policy response: {e}")
+                            print(f">>> Using fallback payment policy: {policies_created['paymentPolicyId']}")
+                except Exception as e:
+                    print(f">>> Error during payment policy fallback: {e}")
         
         # Create Return Policy
         return_payload = {
@@ -249,15 +275,44 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Response: {error_str}")
                 
                 if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
-                    existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
-                    if existing.status_code == 200:
-                        existing_policies = existing.json().get("returnPolicies", [])
-                        if existing_policies:
-                            policies_created["returnPolicyId"] = existing_policies[0].get("returnPolicyId")
-                            print(f">>> Using existing return policy: {policies_created['returnPolicyId']}")
+                    try:
+                        existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
+                        if existing.status_code == 200:
+                            existing_policies = existing.json().get("returnPolicies", [])
+                            if existing_policies:
+                                policies_created["returnPolicyId"] = existing_policies[0].get("returnPolicyId")
+                                print(f">>> Using existing return policy: {policies_created['returnPolicyId']}")
+                    except Exception as e:
+                        print(f">>> Error reading existing return policies: {e}")
             except Exception as e:
                 print(f">>> Error processing return policy response: {e}")
         
+        # Final fallback: fill any missing policy IDs from existing lists
+        try:
+            if "fulfillmentPolicyId" not in policies_created:
+                existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
+                if existing.status_code == 200:
+                    existing_policies = existing.json().get("fulfillmentPolicies", [])
+                    if existing_policies:
+                        policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
+                        print(f">>> Using final fallback fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+            if "paymentPolicyId" not in policies_created:
+                existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
+                if existing.status_code == 200:
+                    existing_policies = existing.json().get("paymentPolicies", [])
+                    if existing_policies:
+                        policies_created["paymentPolicyId"] = existing_policies[0].get("paymentPolicyId")
+                        print(f">>> Using final fallback payment policy: {policies_created['paymentPolicyId']}")
+            if "returnPolicyId" not in policies_created:
+                existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
+                if existing.status_code == 200:
+                    existing_policies = existing.json().get("returnPolicies", [])
+                    if existing_policies:
+                        policies_created["returnPolicyId"] = existing_policies[0].get("returnPolicyId")
+                        print(f">>> Using final fallback return policy: {policies_created['returnPolicyId']}")
+        except Exception as e:
+            print(f">>> Error during final fallback fetch: {e}")
+
         if len(policies_created) == 3:
             return policies_created
         else:
@@ -407,6 +462,39 @@ async def ebay_inventory(
         raise HTTPException(status_code=400, detail=str(e))
 
     return resp.json()
+
+
+@router.delete("/ebay/inventory/{sku}")
+async def delete_ebay_inventory_item(
+    sku: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Deletes an inventory item in eBay by SKU.
+    """
+    encoded_sku = quote(sku)
+
+    try:
+        resp = await ebay_delete(
+            db=db,
+            user=current_user,
+            path=f"/sell/inventory/v1/inventory_item/{encoded_sku}",
+        )
+    except EbayAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if resp.status_code not in (200, 204):
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail={"message": "Failed to delete inventory item", "ebay_resp": body},
+        )
+
+    return {"message": "Deleted", "sku": sku}
 
 # --------------------------------------
 # Publish to eBay (Main Logic)
