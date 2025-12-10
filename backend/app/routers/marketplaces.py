@@ -20,6 +20,11 @@ from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
 from app.services.ebay_client import ebay_get, ebay_post, ebay_put, ebay_delete, EbayAuthError
+from app.services.poshmark_client import (
+    publish_listing as poshmark_publish_listing,
+    PoshmarkAuthError,
+    PoshmarkPublishError,
+)
 
 router = APIRouter(
     prefix="/marketplaces",
@@ -1138,6 +1143,100 @@ def ebay_status(db: Session = Depends(get_db), current_user: User = Depends(get_
     account = db.query(MarketplaceAccount).filter(MarketplaceAccount.user_id == current_user.id, MarketplaceAccount.marketplace == "ebay").first()
     return {"connected": account is not None and account.access_token is not None, "marketplace": "ebay"}
 
+# --------------------------------------
+# Poshmark Connection & Status
+# --------------------------------------
+@router.post("/poshmark/connect")
+async def poshmark_connect(
+    username: str,
+    password: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 계정 연결 (username/password 저장)
+    주의: 실제 운영 환경에서는 password를 암호화하여 저장해야 함
+    """
+    # 기존 계정 확인
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if not account:
+        account = MarketplaceAccount(
+            user_id=current_user.id,
+            marketplace="poshmark",
+        )
+        db.add(account)
+    
+    # username과 password 저장 (password는 임시로 access_token 필드에 저장)
+    # TODO: 실제 운영 환경에서는 password를 bcrypt 등으로 암호화
+    account.username = username
+    account.access_token = password  # 임시 저장
+    
+    db.commit()
+    db.refresh(account)
+    
+    return {
+        "message": "Poshmark account connected",
+        "username": username,
+    }
+
+
+@router.get("/poshmark/status")
+def poshmark_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 계정 연결 상태 확인
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    connected = account is not None and account.username is not None and account.access_token is not None
+    
+    return {
+        "connected": connected,
+        "marketplace": "poshmark",
+        "username": account.username if account else None,
+    }
+
+
+@router.delete("/poshmark/disconnect")
+def poshmark_disconnect(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 계정 연결 해제
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if account:
+        db.delete(account)
+        db.commit()
+    
+    return {"message": "Poshmark account disconnected"}
+
 @router.delete("/ebay/disconnect")
 def ebay_disconnect(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     account = db.query(MarketplaceAccount).filter(MarketplaceAccount.user_id == current_user.id, MarketplaceAccount.marketplace == "ebay").first()
@@ -1153,8 +1252,73 @@ def get_listing_marketplaces(listing_id: int, db: Session = Depends(get_db), cur
     return [link.marketplace for link in links]
 
 @router.post("/poshmark/{listing_id}/publish")
-def publish_to_poshmark(listing_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return {"message": "Poshmark publish not implemented yet"}
+async def publish_to_poshmark(
+    listing_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark에 리스팅 업로드 (Playwright 자동화)
+    """
+    listing = _get_owned_listing_or_404(listing_id, current_user, db)
+    
+    # 이미지 가져오기
+    listing_images = (
+        db.query(ListingImage)
+        .filter(ListingImage.listing_id == listing_id)
+        .order_by(ListingImage.sort_order.asc())
+        .all()
+    )
+    
+    if not listing_images:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one image is required for Poshmark listing"
+        )
+    
+    # Base URL 구성
+    base_url = str(request.base_url).rstrip('/')
+    
+    try:
+        result = await poshmark_publish_listing(
+            db=db,
+            user=current_user,
+            listing=listing,
+            listing_images=listing_images,
+            base_url=base_url,
+            settings=settings,
+        )
+        
+        # DB에 연결 정보 저장
+        lm = db.query(ListingMarketplace).filter(
+            ListingMarketplace.listing_id == listing.id,
+            ListingMarketplace.marketplace == "poshmark"
+        ).first()
+        
+        if not lm:
+            lm = ListingMarketplace(listing_id=listing.id, marketplace="poshmark")
+            db.add(lm)
+        
+        lm.status = result.get("status", "published")
+        lm.external_item_id = result.get("external_item_id")
+        lm.external_url = result.get("url")
+        
+        db.commit()
+        db.refresh(lm)
+        
+        return {
+            "message": "Published to Poshmark",
+            "url": result.get("url"),
+            "listing_id": result.get("external_item_id"),
+        }
+        
+    except PoshmarkAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except PoshmarkPublishError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Publish failed: {str(e)}")
 
 @router.get("/ebay/me")
 async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
