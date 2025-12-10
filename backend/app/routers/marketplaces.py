@@ -732,6 +732,204 @@ async def publish_to_ebay(
         "url": lm.external_url
     }
 
+
+@router.post("/ebay/{listing_id}/prepare-offer")
+async def create_inventory_and_offer(
+    listing_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Creates/updates Inventory Item and Offer, but does NOT publish.
+    Useful for staging before going live.
+    """
+    listing = _get_owned_listing_or_404(listing_id, current_user, db)
+
+    raw_sku = listing.sku if (listing.sku and listing.sku.strip()) else f"USER{current_user.id}-LISTING{listing.id}"
+    sku = _sanitize_sku(raw_sku.strip())
+    print(f">>> Preparing (no publish) SKU: {sku} (sanitized from: {raw_sku})")
+
+    if listing.sku != sku:
+        listing.sku = sku
+        db.add(listing)
+        db.commit()
+        db.refresh(listing)
+
+    title = getattr(listing, "title", "Untitled")
+    description = getattr(listing, "description", "No description") or "No description"
+    price = float(getattr(listing, "price", 0) or 0)
+    quantity = 1
+    ebay_category_id = "11450"
+
+    ebay_condition = "NEW"
+    if listing.condition:
+        c = listing.condition.lower()
+        if "new" in c: ebay_condition = "NEW"
+        elif "like" in c: ebay_condition = "LIKE_NEW"
+        elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
+        elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
+
+    image_urls = []
+    raw_images = getattr(listing, "image_urls", []) or []
+    if isinstance(raw_images, list):
+        for img in raw_images:
+            if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
+                image_urls.append(img)
+
+    merchant_location_key = await _ensure_merchant_location(db, current_user)
+
+    policies = await _get_ebay_policies(db, current_user)
+    if not policies:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "eBay business policies not configured",
+                "error": "MISSING_POLICIES",
+            }
+        )
+    print(f">>> Using Policies - Fulfillment: {policies['fulfillmentPolicyId']}, Payment: {policies['paymentPolicyId']}, Return: {policies['returnPolicyId']}")
+
+    inventory_payload = {
+        "sku": sku,
+        "locale": "en_US",
+        "product": {
+            "title": title,
+            "description": description,
+            # "imageUrls": image_urls
+        },
+        "condition": ebay_condition,
+        "availability": {
+            "shipToLocationAvailability": {
+                "quantity": quantity
+            }
+        }
+    }
+
+    try:
+        encoded_sku = quote(sku)
+        inv_resp = await ebay_put(
+            db=db,
+            user=current_user,
+            path=f"/sell/inventory/v1/inventory_item/{encoded_sku}",
+            json=inventory_payload,
+        )
+    except EbayAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if inv_resp.status_code not in (200, 201, 204):
+        try:
+            error_body = inv_resp.json()
+            error_body_str = json.dumps(error_body, indent=2)
+        except:
+            error_body_str = inv_resp.text
+        print(f">>> Inventory (prepare) Failed (Status: {inv_resp.status_code})")
+        print(f">>> Full Response Body:\n{error_body_str}")
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Failed to create Inventory Item", "ebay_resp": error_body_str}
+        )
+
+    offer_payload = {
+        "sku": sku,
+        "marketplaceId": "EBAY_US",
+        "format": "FIXED_PRICE",
+        "availableQuantity": quantity,
+        "categoryId": str(ebay_category_id),
+        "listingDescription": description,
+        "merchantLocationKey": merchant_location_key,
+        "itemLocation": {
+            "country": "US",
+            "postalCode": "95112"
+        },
+        "listingPolicies": {
+            "fulfillmentPolicyId": policies["fulfillmentPolicyId"],
+            "paymentPolicyId": policies["paymentPolicyId"],
+            "returnPolicyId": policies["returnPolicyId"]
+        },
+        "listingDuration": "GTC",
+        "pricingSummary": {
+            "price": {
+                "currency": "USD",
+                "value": f"{price:.2f}"
+            }
+        },
+    }
+
+    offer_resp = await ebay_post(
+        db=db,
+        user=current_user,
+        path="/sell/inventory/v1/offer",
+        json=offer_payload,
+    )
+
+    offer_id = None
+    if offer_resp.status_code in (200, 201):
+        offer_id = offer_resp.json().get("offerId")
+    else:
+        try:
+            body = offer_resp.json()
+            for err in body.get("errors", []):
+                if "offer entity already exists" in (err.get("message") or "").lower():
+                    if err.get("parameters"):
+                        offer_id = err["parameters"][0]["value"]
+                    break
+        except:
+            body = None
+
+        if offer_id:
+            print(f">>> Offer exists ({offer_id}). Updating (no publish)...")
+            update_resp = await ebay_put(
+                db=db,
+                user=current_user,
+                path=f"/sell/inventory/v1/offer/{offer_id}",
+                json=offer_payload
+            )
+            if update_resp.status_code not in (200, 201, 204):
+                try:
+                    error_body = update_resp.json()
+                    error_body_str = json.dumps(error_body, indent=2)
+                except:
+                    error_body_str = update_resp.text
+                print(f">>> Offer Update Failed (Status: {update_resp.status_code})")
+                print(f">>> Full Response Body:\n{error_body_str}")
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": "Failed to update existing offer", "ebay_resp": error_body_str}
+                )
+        else:
+            try:
+                error_body = offer_resp.json()
+                error_body_str = json.dumps(error_body, indent=2)
+            except:
+                error_body_str = offer_resp.text
+            print(f">>> Offer Creation Failed (Status: {offer_resp.status_code})")
+            print(f">>> Full Response Body:\n{error_body_str}")
+            raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": error_body_str})
+
+    lm = db.query(ListingMarketplace).filter(
+        ListingMarketplace.listing_id == listing.id,
+        ListingMarketplace.marketplace == "ebay"
+    ).first()
+
+    if not lm:
+        lm = ListingMarketplace(listing_id=listing.id, marketplace="ebay")
+        db.add(lm)
+
+    lm.status = "offer_created"
+    lm.sku = sku
+    lm.offer_id = offer_id
+    lm.external_item_id = None
+    lm.external_url = None
+
+    db.commit()
+    db.refresh(lm)
+
+    return {
+        "message": "Inventory and offer prepared (not published)",
+        "offer_id": offer_id,
+        "sku": sku,
+    }
+
 # --------------------------------------
 # OAuth & Utils
 # --------------------------------------
