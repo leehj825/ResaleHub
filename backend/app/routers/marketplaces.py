@@ -143,7 +143,8 @@ async def _create_default_policies(db: Session, user: User):
                     "shippingServices": [
                         {
                             "shippingCarrierCode": "USPS",
-                            "shippingServiceCode": "USPSPriorityMail",
+                            # Use a widely-accepted domestic service for sandbox
+                            "shippingServiceCode": "USPSFirstClass",
                             "freeShipping": False
                         }
                     ]
@@ -169,7 +170,7 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Fulfillment policy creation failed (Status: {fulfillment_resp.status_code})")
                 print(f">>> Response: {error_str}")
                 
-                if "already exists" in str(error_body).lower():
+                if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
                     # Try to get existing policies
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
@@ -206,7 +207,7 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Payment policy creation failed (Status: {payment_resp.status_code})")
                 print(f">>> Response: {error_str}")
                 
-                if "already exists" in str(error_body).lower():
+                if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("paymentPolicies", [])
@@ -247,7 +248,7 @@ async def _create_default_policies(db: Session, user: User):
                 print(f">>> Return policy creation failed (Status: {return_resp.status_code})")
                 print(f">>> Response: {error_str}")
                 
-                if "already exists" in str(error_body).lower():
+                if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("returnPolicies", [])
