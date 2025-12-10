@@ -332,3 +332,4 @@ async def publish_listing(
             
         finally:
             await browser.close()
+
