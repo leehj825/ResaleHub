@@ -21,6 +21,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _loadingStatus = true;
   bool _ebayConnected = false;
+  bool _poshmarkConnected = false;
   String? _error;
 
   @override
@@ -44,10 +45,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _error = null;
     });
     try {
-      final connected = await _marketplaceService.isEbayConnected();
+      final ebayConnected = await _marketplaceService.isEbayConnected();
+      final poshmarkConnected = await _marketplaceService.isPoshmarkConnected();
       if (!mounted) return;
       setState(() {
-        _ebayConnected = connected;
+        _ebayConnected = ebayConnected;
+        _poshmarkConnected = poshmarkConnected;
       });
     } catch (e) {
       if (!mounted) return;
@@ -89,6 +92,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Disconnected from eBay')),
+      );
+
+      await _loadStatus(); // 상태 다시 불러오기
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Disconnect failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _connectPoshmark() async {
+    try {
+      final url = await _marketplaceService.getPoshmarkConnectUrl();
+      final uri = Uri.parse(url);
+      
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
+      } else {
+        throw Exception('Could not launch $url');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to open Poshmark connect: $e')),
+      );
+    }
+  }
+
+  Future<void> _disconnectPoshmark() async {
+    try {
+      await _marketplaceService.disconnectPoshmark();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Disconnected from Poshmark')),
       );
 
       await _loadStatus(); // 상태 다시 불러오기
@@ -192,6 +233,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(width: 8),
                   OutlinedButton(
                     onPressed: _connectEbay,
+                    child: const Text('Re-connect'),
+                  ),
+                ],
+              ],
+            ),
+
+            const Divider(height: 32),
+
+            // Poshmark Connection Section
+            Text('Poshmark Connection', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (_loadingStatus)
+              const Center(child: CircularProgressIndicator())
+            else if (_error != null)
+              Text(
+                'Error: $_error',
+                style: const TextStyle(color: Colors.red),
+              )
+            else
+              Row(
+                children: [
+                  Icon(
+                    _poshmarkConnected
+                        ? Icons.check_circle
+                        : Icons.cancel_outlined,
+                    color: _poshmarkConnected ? Colors.green : Colors.grey,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _poshmarkConnected ? 'Connected' : 'Not connected',
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                ],
+              ),
+            
+            const SizedBox(height: 16),
+            
+            // Poshmark 연결 상태에 따른 버튼들
+            Row(
+              children: [
+                if (!_poshmarkConnected)
+                  ElevatedButton(
+                    onPressed: _connectPoshmark,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE31837), // Poshmark brand color
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Connect Poshmark'),
+                  ),
+                if (_poshmarkConnected) ...[
+                  OutlinedButton(
+                    onPressed: _disconnectPoshmark,
+                    child: const Text('Disconnect'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _connectPoshmark,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFFE31837)),
+                    ),
                     child: const Text('Re-connect'),
                   ),
                 ],
