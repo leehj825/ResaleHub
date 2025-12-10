@@ -1,6 +1,8 @@
 from typing import List
 from urllib.parse import urlencode, quote
 import base64
+import re
+import json
 from datetime import datetime, timedelta
 
 import httpx
@@ -41,6 +43,22 @@ def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listi
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
     return listing
+
+def _sanitize_sku(raw_sku: str) -> str:
+    """
+    Sanitize SKU to only contain alphanumeric characters, hyphens, underscores, and forward slashes.
+    Replaces invalid characters with hyphens and removes consecutive hyphens.
+    """
+    # Replace any non-alphanumeric, non-hyphen, non-underscore, non-forward-slash characters with hyphens
+    sanitized = re.sub(r'[^a-zA-Z0-9_/-]', '-', raw_sku)
+    # Remove consecutive hyphens (but preserve forward slashes)
+    sanitized = re.sub(r'-+', '-', sanitized)
+    # Remove leading/trailing hyphens and underscores (but preserve forward slashes)
+    sanitized = sanitized.strip('-').strip('_')
+    # Ensure it's not empty
+    if not sanitized:
+        sanitized = "SKU"
+    return sanitized
 
 # ---------------------------------------------------------
 # [FIX] Helper: Create/Ensure Merchant Location Exists
@@ -117,9 +135,9 @@ async def publish_to_ebay(
 
     # 1. Determine SKU (Sanitize input to avoid URL errors)
     raw_sku = listing.sku if (listing.sku and listing.sku.strip()) else f"USER{current_user.id}-LISTING{listing.id}"
-    # Replace slashes/spaces which break URL paths like /inventory_item/1/001
-    sku = raw_sku.strip().replace("/", "-").replace("\\", "-").replace(" ", "-")
-    print(f">>> Publishing SKU: {sku}")
+    # Use proper sanitization function to ensure only valid characters
+    sku = _sanitize_sku(raw_sku.strip())
+    print(f">>> Publishing SKU: {sku} (sanitized from: {raw_sku})")
 
     # [FIX] Save SKU immediately to DB so it shows in app even if publish fails later
     if listing.sku != sku:
@@ -187,10 +205,16 @@ async def publish_to_ebay(
         raise HTTPException(status_code=400, detail=str(e))
 
     if inv_resp.status_code not in (200, 201, 204):
-        print(f">>> Inventory Creation Failed: {inv_resp.text}")
+        try:
+            error_body = inv_resp.json()
+            error_body_str = json.dumps(error_body, indent=2)
+        except:
+            error_body_str = inv_resp.text
+        print(f">>> Inventory Creation Failed (Status: {inv_resp.status_code})")
+        print(f">>> Full Response Body:\n{error_body_str}")
         raise HTTPException(
             status_code=400, 
-            detail={"message": "Failed to create Inventory Item", "ebay_resp": inv_resp.json()}
+            detail={"message": "Failed to create Inventory Item", "ebay_resp": error_body_str}
         )
 
     # 5. Create/Update Offer (POST/PUT)
@@ -202,6 +226,10 @@ async def publish_to_ebay(
         "categoryId": str(ebay_category_id),
         "listingDescription": description,
         "merchantLocationKey": merchant_location_key, # [FIX] Links offer to location
+        "itemLocation": {
+            "country": "US",  # ISO 3166-1 alpha-2 country code
+            "postalCode": "95112"  # Valid postal code for Sandbox (San Jose, CA)
+        },
         "pricingSummary": {
             "price": {
                 "currency": "USD",
@@ -241,8 +269,14 @@ async def publish_to_ebay(
                 json=offer_payload
             )
         else:
-             print(f">>> Offer Creation Failed: {offer_resp.text}")
-             raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": offer_resp.text})
+            try:
+                error_body = offer_resp.json()
+                error_body_str = json.dumps(error_body, indent=2)
+            except:
+                error_body_str = offer_resp.text
+            print(f">>> Offer Creation Failed (Status: {offer_resp.status_code})")
+            print(f">>> Full Response Body:\n{error_body_str}")
+            raise HTTPException(status_code=400, detail={"message": "Offer creation failed", "ebay_resp": error_body_str})
 
     # 6. Publish Offer (POST)
     publish_resp = await ebay_post(
@@ -256,8 +290,14 @@ async def publish_to_ebay(
     if publish_resp.status_code in (200, 201):
         ebay_listing_id = publish_resp.json().get("listingId")
     else:
-        print(f">>> Publish Failed: {publish_resp.text}")
-        raise HTTPException(status_code=400, detail={"message": "Publish failed", "ebay_resp": publish_resp.json()})
+        try:
+            error_body = publish_resp.json()
+            error_body_str = json.dumps(error_body, indent=2)
+        except:
+            error_body_str = publish_resp.text
+        print(f">>> Publish Failed (Status: {publish_resp.status_code})")
+        print(f">>> Full Response Body:\n{error_body_str}")
+        raise HTTPException(status_code=400, detail={"message": "Publish failed", "ebay_resp": error_body_str})
 
     # 7. Update DB
     lm = db.query(ListingMarketplace).filter(

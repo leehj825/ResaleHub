@@ -21,7 +21,9 @@ class ListingBase(BaseModel):
     currency: str = Field(default="USD", max_length=3)
     
     sku: Optional[str] = None
-    condition: Optional[str] = None
+    condition: Optional[str] = Field(default="USED_GOOD")
+    ebay_category_id: Optional[str] = None
+    brand: Optional[str] = None
 
 class ListingCreate(ListingBase):
     # [추가] 이미지 저장을 위해 필드 추가
@@ -40,6 +42,8 @@ class ListingUpdate(BaseModel):
     
     sku: Optional[str] = None
     condition: Optional[str] = None
+    ebay_category_id: Optional[str] = None
+    brand: Optional[str] = None
 
 class ListingRead(ListingBase):
     id: int

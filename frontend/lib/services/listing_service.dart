@@ -297,8 +297,12 @@ class ListingService {
   }
 
   Future<Listing> getListing(int id) async {
-    final token = await _authService.getToken();
     final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
     final url = Uri.parse('$baseUrl/listings/$id');
     
     final response = await http.get(
@@ -309,7 +313,7 @@ class ListingService {
     );
 
     if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
       return Listing.fromJson(data);
     } else {
       throw Exception('Failed to load listing: ${response.body}');

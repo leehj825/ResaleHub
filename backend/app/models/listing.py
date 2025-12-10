@@ -33,7 +33,11 @@ class Listing(Base):
 
     # [추가됨] SKU 및 상태 (Import 기능 지원)
     sku = Column(String(100), nullable=True)
-    condition = Column(String(50), nullable=True)
+    condition = Column(String(50), nullable=False, default="USED_GOOD")
+    
+    # eBay-specific fields
+    ebay_category_id = Column(String(50), nullable=True)
+    brand = Column(String(255), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
