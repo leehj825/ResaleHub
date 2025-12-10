@@ -61,6 +61,61 @@ def _sanitize_sku(raw_sku: str) -> str:
     return sanitized
 
 # ---------------------------------------------------------
+# [FIX] Helper: Check and Opt-In to Business Policies
+# ---------------------------------------------------------
+async def _ensure_business_policies_opted_in(db: Session, user: User) -> bool:
+    """
+    Checks if account is opted into Business Policies and opts in if not.
+    Returns True if opted in (or successfully opted in), False otherwise.
+    """
+    try:
+        # Check current opt-in status
+        programs_resp = await ebay_get(
+            db=db,
+            user=user,
+            path="/sell/account/v1/program/get_opted_in_programs"
+        )
+        
+        if programs_resp.status_code == 200:
+            programs_data = programs_resp.json()
+            programs = programs_data.get("programs", [])
+            
+            # Check if already opted into Business Policies
+            for program in programs:
+                if program.get("programType") == "SELLING_POLICY_MANAGEMENT":
+                    print(">>> Account is already opted into Business Policies")
+                    return True
+            
+            # Not opted in, try to opt in
+            print(">>> Account not opted into Business Policies. Attempting to opt in...")
+            opt_in_resp = await ebay_post(
+                db=db,
+                user=user,
+                path="/sell/account/v1/program/opt_in",
+                json={"programType": "SELLING_POLICY_MANAGEMENT"}
+            )
+            
+            if opt_in_resp.status_code in (200, 201, 204):
+                print(">>> Successfully opted into Business Policies")
+                return True
+            else:
+                try:
+                    error_body = opt_in_resp.json()
+                    error_str = json.dumps(error_body, indent=2)
+                    print(f">>> Failed to opt into Business Policies (Status: {opt_in_resp.status_code})")
+                    print(f">>> Response: {error_str}")
+                except:
+                    print(f">>> Failed to opt into Business Policies (Status: {opt_in_resp.status_code}): {opt_in_resp.text}")
+                return False
+        else:
+            print(f">>> Failed to check opt-in status (Status: {programs_resp.status_code})")
+            return False
+            
+    except Exception as e:
+        print(f">>> Error checking/opting into Business Policies: {e}")
+        return False
+
+# ---------------------------------------------------------
 # [FIX] Helper: Create Default eBay Business Policies
 # ---------------------------------------------------------
 async def _create_default_policies(db: Session, user: User):
@@ -275,6 +330,12 @@ async def _get_ebay_policies(db: Session, user: User):
             }
         else:
             print(f">>> Warning: Missing policies - Fulfillment: {fulfillment_policy_id}, Payment: {payment_policy_id}, Return: {return_policy_id}")
+            # Ensure account is opted into Business Policies first
+            opted_in = await _ensure_business_policies_opted_in(db, user)
+            if not opted_in:
+                print(">>> Cannot create policies: Account not opted into Business Policies")
+                return None
+            
             # Try to create default policies
             print(f">>> Attempting to create default policies...")
             created_policies = await _create_default_policies(db, user)
@@ -410,7 +471,7 @@ async def publish_to_ebay(
             detail={
                 "message": "eBay business policies not configured",
                 "error": "MISSING_POLICIES",
-                "instructions": "The system attempted to create default policies but failed. Please ensure your eBay account is opted into Business Policies and try again, or manually create payment, return, and fulfillment policies in your eBay Seller Hub."
+                "instructions": "The system attempted to opt into Business Policies and create default policies but failed. Please check the console logs for specific error details. Note: If you just opted into Business Policies, it may take up to 24 hours to process. Alternatively, you can manually create payment, return, and fulfillment policies in your eBay Seller Hub at https://www.ebay.com/sh/landing."
             }
         )
     print(f">>> Using Policies - Fulfillment: {policies['fulfillmentPolicyId']}, Payment: {policies['paymentPolicyId']}, Return: {policies['returnPolicyId']}")
