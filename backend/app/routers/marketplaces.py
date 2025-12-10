@@ -61,6 +61,73 @@ def _sanitize_sku(raw_sku: str) -> str:
     return sanitized
 
 # ---------------------------------------------------------
+# [FIX] Helper: Get eBay Business Policies
+# ---------------------------------------------------------
+async def _get_ebay_policies(db: Session, user: User):
+    """
+    Fetches payment, return, and fulfillment policy IDs from eBay Account API.
+    Returns a dict with policy IDs or None if policies are not set up.
+    """
+    try:
+        # Get fulfillment policies
+        fulfillment_resp = await ebay_get(
+            db=db,
+            user=user,
+            path="/sell/account/v1/fulfillment_policy",
+            params={"marketplace_id": "EBAY_US"}
+        )
+        
+        # Get payment policies
+        payment_resp = await ebay_get(
+            db=db,
+            user=user,
+            path="/sell/account/v1/payment_policy",
+            params={"marketplace_id": "EBAY_US"}
+        )
+        
+        # Get return policies
+        return_resp = await ebay_get(
+            db=db,
+            user=user,
+            path="/sell/account/v1/return_policy",
+            params={"marketplace_id": "EBAY_US"}
+        )
+        
+        fulfillment_policies = fulfillment_resp.json().get("fulfillmentPolicies", []) if fulfillment_resp.status_code == 200 else []
+        payment_policies = payment_resp.json().get("paymentPolicies", []) if payment_resp.status_code == 200 else []
+        return_policies = return_resp.json().get("returnPolicies", []) if return_resp.status_code == 200 else []
+        
+        # Helper to get policy ID (prefer "default" or "standard" named policies, otherwise first)
+        def get_policy_id(policies, policy_id_key="fulfillmentPolicyId"):
+            if not policies:
+                return None
+            # First try to find "default" or "standard" named policy
+            for policy in policies:
+                name = policy.get("name", "").lower()
+                if "default" in name or "standard" in name:
+                    return policy.get(policy_id_key)
+            # Otherwise return first policy
+            return policies[0].get(policy_id_key) if policies else None
+        
+        fulfillment_policy_id = get_policy_id(fulfillment_policies, "fulfillmentPolicyId")
+        payment_policy_id = get_policy_id(payment_policies, "paymentPolicyId")
+        return_policy_id = get_policy_id(return_policies, "returnPolicyId")
+        
+        if fulfillment_policy_id and payment_policy_id and return_policy_id:
+            return {
+                "fulfillmentPolicyId": fulfillment_policy_id,
+                "paymentPolicyId": payment_policy_id,
+                "returnPolicyId": return_policy_id
+            }
+        else:
+            print(f">>> Warning: Missing policies - Fulfillment: {fulfillment_policy_id}, Payment: {payment_policy_id}, Return: {return_policy_id}")
+            return None
+            
+    except Exception as e:
+        print(f">>> Warning: Failed to fetch eBay policies: {e}")
+        return None
+
+# ---------------------------------------------------------
 # [FIX] Helper: Create/Ensure Merchant Location Exists
 # ---------------------------------------------------------
 async def _ensure_merchant_location(db: Session, user: User):
@@ -175,6 +242,14 @@ async def publish_to_ebay(
 
     # 3. [FIX] Ensure Merchant Location Exists (Solves Error 25002)
     merchant_location_key = await _ensure_merchant_location(db, current_user)
+    
+    # 3.5. [FIX] Get eBay Business Policies (Required for publishing)
+    policies = await _get_ebay_policies(db, current_user)
+    if not policies:
+        raise HTTPException(
+            status_code=400,
+            detail="eBay business policies not configured. Please set up payment, return, and fulfillment policies in your eBay account."
+        )
 
     # 4. Create Inventory Item (PUT)
     inventory_payload = {
@@ -230,6 +305,12 @@ async def publish_to_ebay(
             "country": "US",  # ISO 3166-1 alpha-2 country code
             "postalCode": "95112"  # Valid postal code for Sandbox (San Jose, CA)
         },
+        "listingPolicies": {
+            "fulfillmentPolicyId": policies["fulfillmentPolicyId"],
+            "paymentPolicyId": policies["paymentPolicyId"],
+            "returnPolicyId": policies["returnPolicyId"]
+        },
+        "listingDuration": "GTC",  # Good 'Til Cancelled (required field)
         "pricingSummary": {
             "price": {
                 "currency": "USD",
@@ -262,12 +343,24 @@ async def publish_to_ebay(
         if offer_id:
             # [FIX] Update existing offer with new location info
             print(f">>> Offer exists ({offer_id}). Updating...")
-            await ebay_put(
+            update_resp = await ebay_put(
                 db=db,
                 user=current_user,
                 path=f"/sell/inventory/v1/offer/{offer_id}",
                 json=offer_payload
             )
+            if update_resp.status_code not in (200, 201, 204):
+                try:
+                    error_body = update_resp.json()
+                    error_body_str = json.dumps(error_body, indent=2)
+                except:
+                    error_body_str = update_resp.text
+                print(f">>> Offer Update Failed (Status: {update_resp.status_code})")
+                print(f">>> Full Response Body:\n{error_body_str}")
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": "Failed to update existing offer", "ebay_resp": error_body_str}
+                )
         else:
             try:
                 error_body = offer_resp.json()
