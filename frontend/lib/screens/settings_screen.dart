@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../services/marketplace_service.dart';
 import '../services/auth_service.dart';
 import 'ebay_inventory_screen.dart'; // [추가] 인벤토리 화면 임포트
+import 'poshmark_inventory_screen.dart'; // [추가] Poshmark 인벤토리 화면 임포트
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -35,6 +36,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => const EbayInventoryScreen(),
+      ),
+    );
+  }
+
+  /// Poshmark 인벤토리 화면으로 이동
+  void _openPoshmarkInventory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const PoshmarkInventoryScreen(),
       ),
     );
   }
@@ -323,6 +333,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   avatar: const Icon(Icons.inventory_2_outlined),
                   label: const Text('eBay Sandbox Inventory'),
                   onPressed: _openEbayInventory,
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.inventory_2_outlined),
+                  label: const Text('Poshmark Inventory'),
+                  onPressed: _openPoshmarkInventory,
                 ),
               ],
             ),

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'package:frontend/models/ebay_item.dart'; // [필수] Step 1에서 만든 모델 임포트
+import 'package:frontend/models/poshmark_item.dart';
 import 'auth_service.dart';
 
 class MarketplaceService {
@@ -154,6 +155,40 @@ class MarketplaceService {
 
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     return data;
+  }
+
+  // ============================================
+  // Poshmark Inventory Methods
+  // ============================================
+
+  /// Poshmark 인벤토리 조회
+  Future<List<PoshmarkItem>> getPoshmarkInventory() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load Poshmark inventory: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body);
+    
+    // Poshmark 응답 구조: { "items": [ ... ], "total": ... }
+    final List<dynamic> itemsJson = data['items'] ?? [];
+
+    // JSON 리스트를 PoshmarkItem 객체 리스트로 변환
+    return itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
   }
 
   // ============================================

@@ -791,3 +791,89 @@ async def publish_listing(
             )
         raise PoshmarkPublishError(f"Failed to launch browser: {str(e)}")
 
+
+async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
+    """
+    Poshmark 인벤토리 조회 (closet 페이지에서 리스팅 가져오기)
+    Returns: List of listing items
+    """
+    username, password = await get_poshmark_credentials(db, user)
+    
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
+            page = await context.new_page()
+            
+            try:
+                # 로그인
+                login_success = await login_to_poshmark_quick(page, username, password)
+                if not login_success:
+                    raise PoshmarkAuthError("Login failed")
+                
+                # 사용자의 closet 페이지로 이동
+                print(f">>> Navigating to closet page...")
+                closet_url = f"https://poshmark.com/closet/{username}"
+                await page.goto(closet_url, wait_until="load", timeout=20000)
+                await asyncio.sleep(2)  # 페이지 로드 대기
+                
+                # 리스팅 아이템 추출
+                print(f">>> Extracting listings from closet...")
+                items = await page.evaluate("""
+                    () => {
+                        const items = [];
+                        // Poshmark 리스팅 카드 선택자 (일반적인 구조)
+                        const cards = document.querySelectorAll('[data-testid*="tile"], .tile, .listing-tile, [class*="tile"]');
+                        
+                        cards.forEach((card, index) => {
+                            try {
+                                // 제목 추출
+                                const titleEl = card.querySelector('a[href*="/listing/"], [class*="title"], h3, h4');
+                                const title = titleEl ? titleEl.innerText.trim() : `Item ${index + 1}`;
+                                
+                                // 가격 추출
+                                const priceEl = card.querySelector('[class*="price"], [class*="amount"]');
+                                const priceText = priceEl ? priceEl.innerText.trim() : '';
+                                const price = parseFloat(priceText.replace(/[^0-9.]/g, '')) || 0;
+                                
+                                // 이미지 URL 추출
+                                const imgEl = card.querySelector('img');
+                                const imageUrl = imgEl ? imgEl.src : '';
+                                
+                                // 링크 추출
+                                const linkEl = card.querySelector('a[href*="/listing/"]');
+                                const url = linkEl ? linkEl.href : '';
+                                const listingId = url.match(/\\/listing\\/([^/]+)/)?.[1] || '';
+                                
+                                if (title && url) {
+                                    items.push({
+                                        title: title,
+                                        price: price,
+                                        imageUrl: imageUrl,
+                                        url: url,
+                                        listingId: listingId,
+                                        sku: listingId || `poshmark-${index}`,
+                                    });
+                                }
+                            } catch (e) {
+                                console.error('Error extracting item:', e);
+                            }
+                        });
+                        
+                        return items;
+                    }
+                """)
+                
+                print(f">>> Found {len(items)} items in closet")
+                return items
+                
+            finally:
+                await browser.close()
+    except PoshmarkAuthError:
+        raise
+    except Exception as e:
+        raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
+

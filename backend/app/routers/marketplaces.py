@@ -1644,3 +1644,24 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
     except EbayAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return resp.json()
+
+# --------------------------------------
+# Poshmark Inventory
+# --------------------------------------
+@router.get("/poshmark/inventory")
+async def poshmark_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 인벤토리 조회 (Playwright로 closet 페이지 스크래핑)
+    """
+    from app.services.poshmark_client import get_poshmark_inventory
+    
+    try:
+        items = await get_poshmark_inventory(db, current_user)
+        return {"items": items, "total": len(items)}
+    except PoshmarkAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Poshmark inventory: {str(e)}")
