@@ -1335,26 +1335,95 @@ def poshmark_connect_form(
                 </div>
                 <div class="error" id="errorMsg"></div>
                 <div class="success" id="successMsg"></div>
-                <button type="submit">Connect Poshmark</button>
+                <div class="progress" id="progressMsg" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">Connecting...</div>
+                </div>
+                <button type="submit" id="submitBtn">Connect Poshmark</button>
             </form>
         </div>
+        <style>
+            .progress {{
+                margin: 20px 0;
+                padding: 15px;
+                background: #f0f0f0;
+                border-radius: 4px;
+            }}
+            .progress-bar {{
+                width: 100%;
+                height: 20px;
+                background: #e0e0e0;
+                border-radius: 10px;
+                overflow: hidden;
+                margin-bottom: 10px;
+            }}
+            .progress-fill {{
+                height: 100%;
+                background: linear-gradient(90deg, #e31837, #ff6b8a);
+                width: 0%;
+                transition: width 0.3s ease;
+                animation: pulse 1.5s ease-in-out infinite;
+            }}
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.7; }}
+            }}
+            .progress-text {{
+                text-align: center;
+                color: #333;
+                font-weight: 500;
+            }}
+            button:disabled {{
+                opacity: 0.6;
+                cursor: not-allowed;
+            }}
+        </style>
         <script>
             document.getElementById('connectForm').addEventListener('submit', async function(e) {{
                 e.preventDefault();
                 const formData = new FormData(this);
                 const errorDiv = document.getElementById('errorMsg');
                 const successDiv = document.getElementById('successMsg');
+                const progressDiv = document.getElementById('progressMsg');
+                const progressFill = document.getElementById('progressFill');
+                const progressText = document.getElementById('progressText');
+                const submitBtn = document.getElementById('submitBtn');
                 
                 errorDiv.style.display = 'none';
                 successDiv.style.display = 'none';
+                progressDiv.style.display = 'block';
+                submitBtn.disabled = true;
+                
+                // 진행 상황 업데이트 함수
+                function updateProgress(percent, text) {{
+                    progressFill.style.width = percent + '%';
+                    progressText.textContent = text;
+                }}
+                
+                // 단계별 진행 상황 표시
+                updateProgress(10, 'Preparing connection...');
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                updateProgress(20, 'Verifying credentials with Poshmark...');
+                await new Promise(resolve => setTimeout(resolve, 500));
                 
                 try {{
+                    updateProgress(40, 'Logging into Poshmark...');
                     const response = await fetch(this.action, {{
                         method: 'POST',
                         body: formData
                     }});
                     
+                    updateProgress(80, 'Finalizing connection...');
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
                     if (response.ok) {{
+                        updateProgress(100, 'Connection successful!');
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        
+                        progressDiv.style.display = 'none';
                         successDiv.textContent = 'Poshmark account connected successfully!';
                         successDiv.style.display = 'block';
                         setTimeout(() => {{
@@ -1362,12 +1431,16 @@ def poshmark_connect_form(
                         }}, 2000);
                     }} else {{
                         const data = await response.json();
+                        progressDiv.style.display = 'none';
                         errorDiv.textContent = data.detail || 'Connection failed. Please try again.';
                         errorDiv.style.display = 'block';
+                        submitBtn.disabled = false;
                     }}
                 }} catch (error) {{
-                    errorDiv.textContent = 'An error occurred. Please try again.';
+                    progressDiv.style.display = 'none';
+                    errorDiv.textContent = 'An error occurred: ' + error.message + '. Please try again.';
                     errorDiv.style.display = 'block';
+                    submitBtn.disabled = false;
                 }}
             }});
         </script>
@@ -1405,8 +1478,13 @@ async def poshmark_connect_callback(
     print(f">>> Verifying Poshmark credentials for user {username}...")
     from app.services.poshmark_client import verify_poshmark_credentials
     
+    # Render.com에서는 headless=True, 로컬에서는 headless=False로 설정 가능
+    # 환경 변수로 제어 가능하도록 설정
+    import os
+    headless_mode = os.getenv("POSHMARK_HEADLESS", "true").lower() == "true"
+    
     try:
-        login_success = await verify_poshmark_credentials(username, password)
+        login_success = await verify_poshmark_credentials(username, password, headless=headless_mode)
         if not login_success:
             raise HTTPException(
                 status_code=401,

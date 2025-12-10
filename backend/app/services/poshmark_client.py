@@ -57,15 +57,18 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
     return username, password
 
 
-async def verify_poshmark_credentials(username: str, password: str) -> bool:
+async def verify_poshmark_credentials(username: str, password: str, headless: bool = True) -> bool:
     """
     Poshmark 자격 증명 검증 (연결 시 사용)
     실제 로그인을 시도하여 자격 증명이 유효한지 확인합니다.
     빠른 검증을 위해 타임아웃을 줄입니다.
+    
+    Args:
+        headless: False로 설정하면 브라우저를 보여줌 (디버깅용)
     """
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=headless)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
