@@ -6,7 +6,10 @@ Poshmark Playwright 자동화 클라이언트
 - 발행
 """
 import asyncio
+import os
+import tempfile
 from typing import List, Optional
+import httpx
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 from sqlalchemy.orm import Session
 
@@ -263,36 +266,99 @@ async def publish_listing_to_poshmark(
     try:
         # 1. "List an Item" 또는 "Sell" 페이지로 이동
         print(f">>> Navigating to Poshmark listing page...")
-        await page.goto("https://poshmark.com/listing/new", wait_until="networkidle", timeout=30000)
+        # 여러 URL 시도 (Poshmark는 여러 경로를 사용할 수 있음)
+        listing_urls = [
+            "https://poshmark.com/listing/new",
+            "https://poshmark.com/sell",
+            "https://poshmark.com/closet/new",
+        ]
+        
+        page_loaded = False
+        for url in listing_urls:
+            try:
+                print(f">>> Trying URL: {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_load_state("networkidle", timeout=15000)
+                
+                # 리스팅 페이지인지 확인
+                current_url = page.url
+                if "listing" in current_url.lower() or "sell" in current_url.lower() or "new" in current_url.lower():
+                    print(f">>> Successfully loaded listing page: {current_url}")
+                    page_loaded = True
+                    break
+            except Exception as e:
+                print(f">>> Failed to load {url}: {e}")
+                continue
+        
+        if not page_loaded:
+            raise PoshmarkPublishError("Could not access Poshmark listing page")
+        
+        # 페이지가 완전히 로드될 때까지 추가 대기
+        await asyncio.sleep(2)
         
         # 2. 이미지 업로드
         if listing_images:
             print(f">>> Uploading {len(listing_images)} images...")
             
-            # 이미지 파일 input 찾기
-            image_input_selector = 'input[type="file"][accept*="image"], input[type="file"]'
-            try:
-                await page.wait_for_selector(image_input_selector, timeout=10000)
+            # 이미지 파일 input 찾기 - 더 많은 셀렉터 옵션
+            image_input_selectors = [
+                'input[type="file"][accept*="image"]',
+                'input[type="file"]',
+                'input[accept*="image"]',
+                'input[class*="upload" i]',
+                'input[id*="upload" i]',
+                'input[name*="image" i]',
+                'input[name*="photo" i]',
+                'input[name*="file" i]',
+            ]
+            
+            file_input = None
+            for selector in image_input_selectors:
+                try:
+                    file_input = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                    if file_input:
+                        print(f">>> Found image upload input with selector: {selector}")
+                        break
+                except PlaywrightTimeoutError:
+                    continue
+            
+            if file_input:
+                # 이미지 다운로드 및 임시 파일로 저장
                 
-                # 이미지 URL들을 다운로드하여 임시 파일로 저장 후 업로드
-                # 또는 직접 URL을 사용할 수 있다면 사용
-                image_paths = []
-                for img in listing_images[:8]:  # Poshmark는 최대 8장
-                    img_url = f"{base_url}{settings.media_url}/{img.file_path}"
-                    # Playwright로 이미지 다운로드 후 업로드
-                    # 간단한 방법: 이미지 URL을 직접 사용 (가능한 경우)
-                    image_paths.append(img_url)
-                
-                # 파일 업로드 (로컬 파일 경로가 필요한 경우)
-                # 실제로는 이미지를 다운로드하여 임시 파일로 저장 후 업로드해야 할 수 있음
-                # 여기서는 기본 구조만 제공
-                file_input = await page.query_selector(image_input_selector)
-                if file_input:
-                    # 실제 구현에서는 이미지를 다운로드하여 로컬 경로로 전달
-                    # await file_input.set_input_files(image_paths)
-                    print(f">>> Image upload selector found (implementation needed for actual file upload)")
-            except PlaywrightTimeoutError:
-                print(f">>> Image upload input not found, skipping...")
+                temp_files = []
+                try:
+                    for img in listing_images[:8]:  # Poshmark는 최대 8장
+                        img_url = f"{base_url}{settings.media_url}/{img.file_path}"
+                        print(f">>> Downloading image: {img_url}")
+                        
+                        async with httpx.AsyncClient() as client:
+                            response = await client.get(img_url, timeout=30.0)
+                            if response.status_code == 200:
+                                # 임시 파일 생성
+                                suffix = os.path.splitext(img.file_path)[1] or '.jpg'
+                                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                                temp_file.write(response.content)
+                                temp_file.close()
+                                temp_files.append(temp_file.name)
+                                print(f">>> Downloaded image to: {temp_file.name}")
+                    
+                    if temp_files:
+                        # 파일 업로드
+                        await file_input.set_input_files(temp_files)
+                        print(f">>> Uploaded {len(temp_files)} images")
+                        
+                        # 업로드 완료 대기
+                        await asyncio.sleep(2)
+                finally:
+                    # 임시 파일 정리
+                    for temp_file in temp_files:
+                        try:
+                            os.unlink(temp_file)
+                        except:
+                            pass
+            else:
+                print(f">>> Image upload input not found, continuing without images...")
+                # 이미지 없이도 계속 진행 (Poshmark는 이미지가 필수일 수 있지만 시도)
         
         # 3. 제목 입력
         title_selector = 'input[name*="title" i], input[placeholder*="title" i], textarea[name*="title" i]'
@@ -366,30 +432,110 @@ async def publish_listing_to_poshmark(
                 pass
         
         # 10. "Publish" 또는 "List Item" 버튼 클릭
+        print(f">>> Looking for publish button...")
+        
+        # 페이지가 완전히 로드될 때까지 대기
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await asyncio.sleep(2)  # 추가 대기 (동적 콘텐츠 로드)
+        
         publish_selectors = [
             'button:has-text("Publish")',
             'button:has-text("List Item")',
+            'button:has-text("List")',
             'button:has-text("Post")',
+            'button:has-text("Share")',
+            'button[type="submit"]',
+            'button[type="submit"]:has-text("Publish")',
             'button[type="submit"]:has-text("List")',
+            'button[type="submit"]:has-text("Post")',
             '[data-testid*="publish" i]',
-            '[data-testid*="submit" i]'
+            '[data-testid*="submit" i]',
+            '[data-testid*="list" i]',
+            '[data-testid*="post" i]',
+            'button[class*="publish" i]',
+            'button[class*="submit" i]',
+            'button[class*="list" i]',
+            'button[class*="post" i]',
+            'a:has-text("Publish")',
+            'a:has-text("List")',
+            '[role="button"]:has-text("Publish")',
+            '[role="button"]:has-text("List")',
+            'form button[type="submit"]',
+            'form button:last-child',
         ]
         
-        published = False
+        publish_button = None
+        used_selector = None
+        
         for selector in publish_selectors:
             try:
-                publish_button = await page.query_selector(selector)
+                publish_button = await page.wait_for_selector(selector, timeout=3000, state="visible")
                 if publish_button:
-                    await publish_button.click()
-                    print(f">>> Clicked publish button: {selector}")
-                    await page.wait_for_load_state("networkidle", timeout=30000)
-                    published = True
-                    break
-            except:
+                    # 버튼이 보이는지 확인
+                    is_visible = await publish_button.is_visible()
+                    if is_visible:
+                        used_selector = selector
+                        print(f">>> Found publish button with selector: {selector}")
+                        break
+                    else:
+                        publish_button = None
+            except PlaywrightTimeoutError:
+                continue
+            except Exception as e:
+                print(f">>> Error checking selector {selector}: {e}")
                 continue
         
-        if not published:
-            raise PoshmarkPublishError("Could not find or click publish button")
+        if not publish_button:
+            # 디버깅: 페이지 스크린샷 및 HTML 일부 저장
+            try:
+                await page.screenshot(path="/tmp/poshmark_listing_page.png", full_page=True)
+                print(f">>> Screenshot saved to /tmp/poshmark_listing_page.png")
+            except:
+                pass
+            
+            # 페이지의 모든 버튼 찾기
+            try:
+                all_buttons = await page.evaluate("""
+                    () => {
+                        const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+                        return buttons.map(btn => ({
+                            text: btn.innerText.trim(),
+                            type: btn.type || '',
+                            className: btn.className || '',
+                            id: btn.id || '',
+                            visible: btn.offsetParent !== null
+                        })).filter(btn => btn.visible && btn.text.length > 0);
+                    }
+                """)
+                print(f">>> Found {len(all_buttons)} visible buttons on page:")
+                for btn in all_buttons[:10]:  # 처음 10개만 출력
+                    print(f">>>   - Text: '{btn['text']}', Type: {btn['type']}, Class: {btn['className'][:50]}")
+            except Exception as e:
+                print(f">>> Could not list buttons: {e}")
+            
+            raise PoshmarkPublishError(
+                "Could not find publish button on Poshmark listing page. "
+                "The page structure may have changed. Check screenshot at /tmp/poshmark_listing_page.png"
+            )
+        
+        # 버튼 클릭
+        try:
+            # 스크롤하여 버튼이 보이도록
+            await publish_button.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)
+            
+            # 클릭 시도
+            await publish_button.click(timeout=10000)
+            print(f">>> Clicked publish button: {used_selector}")
+            
+            # 페이지 로드 대기
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                await asyncio.sleep(3)  # networkidle 실패 시에도 대기
+                
+        except Exception as e:
+            raise PoshmarkPublishError(f"Failed to click publish button: {str(e)}")
         
         # 11. 업로드 완료 확인 및 URL 추출
         await asyncio.sleep(2)  # 페이지 로드 대기
