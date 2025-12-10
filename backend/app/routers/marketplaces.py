@@ -1147,20 +1147,23 @@ def ebay_status(db: Session = Depends(get_db), current_user: User = Depends(get_
 # Poshmark Connection & Status (eBay 스타일)
 # --------------------------------------
 @router.get("/poshmark/connect")
-def poshmark_connect(current_user: User = Depends(get_current_user)):
+def poshmark_connect(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
     """
     Poshmark 연결 페이지 URL 반환 (eBay 스타일)
     프론트엔드에서 이 URL로 리다이렉트하면 연결 폼 페이지가 표시됨
     """
-    # 연결 페이지 URL 생성 (state에 user_id 포함)
-    from urllib.parse import urlencode
-    base_url = settings.ebay_redirect_uri.split("/oauth")[0] if hasattr(settings, "ebay_redirect_uri") else "http://localhost:8000"
+    # Request에서 base URL 가져오기
+    base_url = str(request.base_url).rstrip('/')
     connect_url = f"{base_url}/marketplaces/poshmark/connect/form?state={current_user.id}"
     return {"connect_url": connect_url}
 
 
 @router.get("/poshmark/connect/form")
 def poshmark_connect_form(
+    request: Request,
     state: str,
     db: Session = Depends(get_db),
 ):
@@ -1319,7 +1322,7 @@ def poshmark_connect_form(
             <p style="color: #666; margin-bottom: 20px;">
                 Enter your Poshmark login credentials to connect your account.
             </p>
-            <form id="connectForm" method="POST" action="/marketplaces/poshmark/connect/callback">
+            <form id="connectForm" method="POST" action="{str(request.base_url).rstrip('/')}/marketplaces/poshmark/connect/callback">
                 <input type="hidden" name="state" value="{state}">
                 <div class="form-group">
                     <label for="username">Username or Email</label>
