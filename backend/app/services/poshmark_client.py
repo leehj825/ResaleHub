@@ -450,179 +450,160 @@ async def publish_listing_to_poshmark(
     Returns: {listing_id, url, status}
     """
     try:
-        # 1. "List an Item" 또는 "Sell" 페이지로 이동
+        # 1. "List an Item" 페이지로 이동 (가장 일반적인 URL만 사용)
         print(f">>> Navigating to Poshmark listing page...")
-        # 여러 URL 시도 (Poshmark는 여러 경로를 사용할 수 있음)
-        listing_urls = [
-            "https://poshmark.com/listing/new",
-            "https://poshmark.com/sell",
-            "https://poshmark.com/closet/new",
-        ]
+        listing_url = "https://poshmark.com/listing/new"
         
-        page_loaded = False
-        for url in listing_urls:
+        try:
+            print(f">>> Loading: {listing_url}")
+            # load 이벤트만 대기 (더 빠름)
+            await page.goto(listing_url, wait_until="load", timeout=20000)
+            
+            # 리스팅 페이지인지 빠르게 확인
+            current_url = page.url
+            print(f">>> Loaded page: {current_url}")
+            
+            # 필수 요소가 나타날 때까지만 대기 (networkidle 대신)
             try:
-                print(f">>> Trying URL: {url}")
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                # 제목이나 이미지 업로드 필드가 나타나면 페이지 로드 완료로 간주
+                await page.wait_for_selector(
+                    'input[type="file"], input[name*="title" i], textarea[name*="description" i]',
+                    timeout=10000,
+                    state="attached"  # DOM에만 있으면 됨 (visible 불필요)
+                )
+            except PlaywrightTimeoutError:
+                # 필수 요소가 없어도 계속 진행 (페이지 구조가 다를 수 있음)
+                print(f">>> Warning: Could not find expected form elements, continuing anyway...")
                 
-                # 리스팅 페이지인지 확인
-                current_url = page.url
-                if "listing" in current_url.lower() or "sell" in current_url.lower() or "new" in current_url.lower():
-                    print(f">>> Successfully loaded listing page: {current_url}")
-                    page_loaded = True
-                    break
-            except Exception as e:
-                print(f">>> Failed to load {url}: {e}")
-                continue
-        
-        if not page_loaded:
-            raise PoshmarkPublishError("Could not access Poshmark listing page")
-        
-        # 페이지가 완전히 로드될 때까지 추가 대기
-        await asyncio.sleep(2)
+        except Exception as e:
+            raise PoshmarkPublishError(f"Could not access Poshmark listing page: {str(e)}")
         
         # 2. 이미지 업로드
         if listing_images:
             print(f">>> Uploading {len(listing_images)} images...")
             
-            # 이미지 파일 input 찾기 - 더 많은 셀렉터 옵션
-            image_input_selectors = [
-                'input[type="file"][accept*="image"]',
-                'input[type="file"]',
-                'input[accept*="image"]',
-                'input[class*="upload" i]',
-                'input[id*="upload" i]',
-                'input[name*="image" i]',
-                'input[name*="photo" i]',
-                'input[name*="file" i]',
-            ]
-            
-            file_input = None
-            for selector in image_input_selectors:
+            # 이미지 파일 input 찾기
+            image_input_selector = 'input[type="file"][accept*="image"], input[type="file"]'
+            try:
+                file_input = await page.wait_for_selector(image_input_selector, timeout=3000, state="attached")
+                
+                if file_input:
+                    # 이미지 다운로드 및 임시 파일로 저장 (병렬 처리)
+                    print(f">>> Downloading {len(listing_images[:8])} images in parallel...")
+                    
+                    async def download_image(img: ListingImage) -> Optional[str]:
+                        try:
+                            img_url = f"{base_url}{settings.media_url}/{img.file_path}"
+                            async with httpx.AsyncClient() as client:
+                                response = await client.get(img_url, timeout=15.0)
+                                if response.status_code == 200:
+                                    suffix = os.path.splitext(img.file_path)[1] or '.jpg'
+                                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                                    temp_file.write(response.content)
+                                    temp_file.close()
+                                    return temp_file.name
+                        except Exception as e:
+                            print(f">>> Failed to download {img.file_path}: {e}")
+                            return None
+                    
+                    # 병렬 다운로드
+                    download_tasks = [download_image(img) for img in listing_images[:8]]
+                    temp_files = [f for f in await asyncio.gather(*download_tasks) if f]
+                    
+                    if temp_files:
+                        try:
+                            # 파일 업로드
+                            await file_input.set_input_files(temp_files)
+                            print(f">>> Uploaded {len(temp_files)} images")
+                            
+                            # 업로드 완료 대기 (최소화)
+                            await asyncio.sleep(1)
+                        finally:
+                            # 임시 파일 정리
+                            for temp_file in temp_files:
+                                try:
+                                    os.unlink(temp_file)
+                                except:
+                                    pass
+                    else:
+                        print(f">>> Warning: No images were downloaded successfully")
+            except PlaywrightTimeoutError:
+                print(f">>> Image upload input not found, skipping...")
+        
+        # 3-5. 필수 필드 입력 (타임아웃 최소화)
+        print(f">>> Filling listing details...")
+        
+        # 제목 입력
+        title_selectors = [
+            'input[name*="title" i]',
+            'input[placeholder*="title" i]',
+            'textarea[name*="title" i]',
+            'input[type="text"]:first-of-type',
+        ]
+        for selector in title_selectors:
+            try:
+                title_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
+                if title_field:
+                    await title_field.fill(listing.title or "Untitled")
+                    print(f">>> Filled title: {listing.title}")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        # 설명 입력
+        description_selectors = [
+            'textarea[name*="description" i]',
+            'textarea[placeholder*="description" i]',
+            'textarea[placeholder*="tell" i]',
+            'textarea:first-of-type',
+        ]
+        for selector in description_selectors:
+            try:
+                desc_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
+                if desc_field:
+                    await desc_field.fill(listing.description or "No description")
+                    print(f">>> Filled description")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        # 가격 입력
+        price_selectors = [
+            'input[name*="price" i]',
+            'input[type="number"][placeholder*="price" i]',
+            'input[placeholder*="$" i]',
+            'input[type="number"]',
+        ]
+        price = float(listing.price or 0)
+        for selector in price_selectors:
+            try:
+                price_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
+                if price_field:
+                    await price_field.fill(str(int(price)))
+                    print(f">>> Filled price: ${price}")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        # 6-9. 선택적 필드 (빠르게 시도, 실패해도 계속)
+        # 브랜드 입력 (있는 경우)
+        if listing.brand:
+            brand_selectors = ['input[name*="brand" i]', 'input[placeholder*="brand" i]']
+            for selector in brand_selectors:
                 try:
-                    file_input = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                    if file_input:
-                        print(f">>> Found image upload input with selector: {selector}")
+                    brand_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                    if brand_field:
+                        await brand_field.fill(listing.brand)
+                        print(f">>> Filled brand: {listing.brand}")
                         break
                 except PlaywrightTimeoutError:
                     continue
-            
-            if file_input:
-                # 이미지 다운로드 및 임시 파일로 저장
-                
-                temp_files = []
-                try:
-                    for img in listing_images[:8]:  # Poshmark는 최대 8장
-                        img_url = f"{base_url}{settings.media_url}/{img.file_path}"
-                        print(f">>> Downloading image: {img_url}")
-                        
-                        async with httpx.AsyncClient() as client:
-                            response = await client.get(img_url, timeout=30.0)
-                            if response.status_code == 200:
-                                # 임시 파일 생성
-                                suffix = os.path.splitext(img.file_path)[1] or '.jpg'
-                                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-                                temp_file.write(response.content)
-                                temp_file.close()
-                                temp_files.append(temp_file.name)
-                                print(f">>> Downloaded image to: {temp_file.name}")
-                    
-                    if temp_files:
-                        # 파일 업로드
-                        await file_input.set_input_files(temp_files)
-                        print(f">>> Uploaded {len(temp_files)} images")
-                        
-                        # 업로드 완료 대기
-                        await asyncio.sleep(2)
-                finally:
-                    # 임시 파일 정리
-                    for temp_file in temp_files:
-                        try:
-                            os.unlink(temp_file)
-                        except:
-                            pass
-            else:
-                print(f">>> Image upload input not found, continuing without images...")
-                # 이미지 없이도 계속 진행 (Poshmark는 이미지가 필수일 수 있지만 시도)
-        
-        # 3. 제목 입력
-        title_selector = 'input[name*="title" i], input[placeholder*="title" i], textarea[name*="title" i]'
-        try:
-            await page.wait_for_selector(title_selector, timeout=10000)
-            await page.fill(title_selector, listing.title or "Untitled")
-            print(f">>> Filled title: {listing.title}")
-        except PlaywrightTimeoutError:
-            print(f">>> Title input not found")
-        
-        # 4. 설명 입력
-        description_selector = 'textarea[name*="description" i], textarea[placeholder*="description" i], textarea[placeholder*="tell" i]'
-        try:
-            await page.wait_for_selector(description_selector, timeout=10000)
-            description = listing.description or "No description"
-            await page.fill(description_selector, description)
-            print(f">>> Filled description")
-        except PlaywrightTimeoutError:
-            print(f">>> Description input not found")
-        
-        # 5. 가격 입력
-        price_selector = 'input[name*="price" i], input[type="number"][placeholder*="price" i], input[placeholder*="$" i]'
-        try:
-            await page.wait_for_selector(price_selector, timeout=10000)
-            price = float(listing.price or 0)
-            await page.fill(price_selector, str(int(price)))
-            print(f">>> Filled price: ${price}")
-        except PlaywrightTimeoutError:
-            print(f">>> Price input not found")
-        
-        # 6. 카테고리 선택 (가능한 경우)
-        # Poshmark는 보통 드롭다운으로 카테고리 선택
-        category_selectors = [
-            'select[name*="category" i]',
-            'button:has-text("Category")',
-            '[data-testid*="category" i]'
-        ]
-        for selector in category_selectors:
-            try:
-                category_element = await page.query_selector(selector)
-                if category_element:
-                    # 카테고리 선택 로직 (구현 필요)
-                    print(f">>> Category selector found (selection logic needed)")
-                    break
-            except:
-                continue
-        
-        # 7. 브랜드 입력 (있는 경우)
-        brand_selector = 'input[name*="brand" i], input[placeholder*="brand" i]'
-        if listing.brand:
-            try:
-                await page.wait_for_selector(brand_selector, timeout=5000)
-                await page.fill(brand_selector, listing.brand)
-                print(f">>> Filled brand: {listing.brand}")
-            except PlaywrightTimeoutError:
-                pass
-        
-        # 8. 사이즈 입력 (있는 경우)
-        size_selector = 'select[name*="size" i], input[name*="size" i]'
-        # 사이즈 정보는 listing 모델에 없을 수 있으므로 스킵
-        
-        # 9. 상태(Condition) 선택 (있는 경우)
-        condition_selector = 'select[name*="condition" i], button:has-text("Condition")'
-        if listing.condition:
-            try:
-                condition_element = await page.query_selector(condition_selector)
-                if condition_element:
-                    # 상태 매핑 및 선택 로직
-                    print(f">>> Condition selector found (selection logic needed)")
-            except:
-                pass
         
         # 10. "Publish" 또는 "List Item" 버튼 클릭
         print(f">>> Looking for publish button...")
         
-        # 페이지가 완전히 로드될 때까지 대기
-        await page.wait_for_load_state("networkidle", timeout=15000)
-        await asyncio.sleep(2)  # 추가 대기 (동적 콘텐츠 로드)
+        # 최소 대기 (필요한 경우에만)
+        await asyncio.sleep(0.5)
         
         publish_selectors = [
             'button:has-text("Publish")',
