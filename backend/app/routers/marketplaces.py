@@ -1401,6 +1401,27 @@ async def poshmark_connect_callback(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # 실제 Poshmark 로그인 검증
+    print(f">>> Verifying Poshmark credentials for user {username}...")
+    from app.services.poshmark_client import verify_poshmark_credentials
+    
+    try:
+        login_success = await verify_poshmark_credentials(username, password)
+        if not login_success:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid Poshmark credentials. Please check your username and password."
+            )
+        print(f">>> Poshmark credentials verified successfully")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f">>> Poshmark verification failed: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to verify Poshmark credentials: {str(e)}"
+        )
+    
     # 기존 계정 확인
     account = (
         db.query(MarketplaceAccount)

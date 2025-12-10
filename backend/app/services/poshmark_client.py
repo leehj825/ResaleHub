@@ -57,6 +57,31 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
     return username, password
 
 
+async def verify_poshmark_credentials(username: str, password: str) -> bool:
+    """
+    Poshmark 자격 증명 검증 (연결 시 사용)
+    실제 로그인을 시도하여 자격 증명이 유효한지 확인합니다.
+    """
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
+            page = await context.new_page()
+            
+            try:
+                # 로그인 시도
+                login_success = await login_to_poshmark(page, username, password)
+                return login_success
+            finally:
+                await browser.close()
+    except Exception as e:
+        print(f">>> Credential verification error: {e}")
+        return False
+
+
 async def login_to_poshmark(page: Page, username: str, password: str) -> bool:
     """
     Poshmark에 로그인
