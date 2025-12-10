@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -1144,24 +1144,265 @@ def ebay_status(db: Session = Depends(get_db), current_user: User = Depends(get_
     return {"connected": account is not None and account.access_token is not None, "marketplace": "ebay"}
 
 # --------------------------------------
-# Poshmark Connection & Status
+# Poshmark Connection & Status (eBay 스타일)
 # --------------------------------------
-@router.post("/poshmark/connect")
-async def poshmark_connect(
-    username: str,
-    password: str,
+@router.get("/poshmark/connect")
+def poshmark_connect(current_user: User = Depends(get_current_user)):
+    """
+    Poshmark 연결 페이지 URL 반환 (eBay 스타일)
+    프론트엔드에서 이 URL로 리다이렉트하면 연결 폼 페이지가 표시됨
+    """
+    # 연결 페이지 URL 생성 (state에 user_id 포함)
+    from urllib.parse import urlencode
+    base_url = settings.ebay_redirect_uri.split("/oauth")[0] if hasattr(settings, "ebay_redirect_uri") else "http://localhost:8000"
+    connect_url = f"{base_url}/marketplaces/poshmark/connect/form?state={current_user.id}"
+    return {"connect_url": connect_url}
+
+
+@router.get("/poshmark/connect/form")
+def poshmark_connect_form(
+    state: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
     """
-    Poshmark 계정 연결 (username/password 저장)
-    주의: 실제 운영 환경에서는 password를 암호화하여 저장해야 함
+    Poshmark 연결 폼 HTML 페이지 (eBay OAuth 콜백과 유사한 플로우)
     """
+    try:
+        user_id = int(state)
+    except:
+        return HTMLResponse(
+            content="<html><body><p>Invalid connection request.</p></body></html>",
+            status_code=400
+        )
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return HTMLResponse(
+            content="<html><body><p>User not found.</p></body></html>",
+            status_code=404
+        )
+    
+    # 이미 연결된 계정 확인
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if account and account.username:
+        # 이미 연결됨
+        html_content = f"""
+        <html>
+        <head>
+            <title>Poshmark Connection</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    max-width: 500px;
+                    margin: 50px auto;
+                    padding: 20px;
+                    background: #f5f5f5;
+                }}
+                .container {{
+                    background: white;
+                    padding: 30px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }}
+                h2 {{ color: #333; }}
+                .success {{ color: #28a745; }}
+                .info {{ 
+                    background: #e7f3ff;
+                    padding: 15px;
+                    border-radius: 4px;
+                    margin: 20px 0;
+                }}
+                button {{
+                    background: #6c757d;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>Poshmark Account</h2>
+                <div class="info">
+                    <p class="success">✓ Already connected</p>
+                    <p><strong>Username:</strong> {account.username}</p>
+                </div>
+                <p>You can close this window.</p>
+                <button onclick="window.close()">Close</button>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
+    
+    # 연결 폼 표시
+    html_content = f"""
+    <html>
+    <head>
+        <title>Connect Poshmark Account</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 500px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            h2 {{ color: #333; }}
+            .form-group {{
+                margin-bottom: 20px;
+            }}
+            label {{
+                display: block;
+                margin-bottom: 5px;
+                color: #555;
+                font-weight: bold;
+            }}
+            input[type="text"],
+            input[type="password"] {{
+                width: 100%;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                box-sizing: border-box;
+                font-size: 14px;
+            }}
+            button {{
+                background: #e31837;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 16px;
+                width: 100%;
+            }}
+            button:hover {{
+                background: #c0142f;
+            }}
+            .error {{
+                color: #dc3545;
+                margin-top: 10px;
+                display: none;
+            }}
+            .success {{
+                color: #28a745;
+                margin-top: 10px;
+                display: none;
+            }}
+            .note {{
+                font-size: 12px;
+                color: #666;
+                margin-top: 5px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Connect Poshmark Account</h2>
+            <p style="color: #666; margin-bottom: 20px;">
+                Enter your Poshmark login credentials to connect your account.
+            </p>
+            <form id="connectForm" method="POST" action="/marketplaces/poshmark/connect/callback">
+                <input type="hidden" name="state" value="{state}">
+                <div class="form-group">
+                    <label for="username">Username or Email</label>
+                    <input type="text" id="username" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required>
+                    <div class="note">Your password is stored securely and only used for automated listing uploads.</div>
+                </div>
+                <div class="error" id="errorMsg"></div>
+                <div class="success" id="successMsg"></div>
+                <button type="submit">Connect Poshmark</button>
+            </form>
+        </div>
+        <script>
+            document.getElementById('connectForm').addEventListener('submit', async function(e) {{
+                e.preventDefault();
+                const formData = new FormData(this);
+                const errorDiv = document.getElementById('errorMsg');
+                const successDiv = document.getElementById('successMsg');
+                
+                errorDiv.style.display = 'none';
+                successDiv.style.display = 'none';
+                
+                try {{
+                    const response = await fetch(this.action, {{
+                        method: 'POST',
+                        body: formData
+                    }});
+                    
+                    if (response.ok) {{
+                        successDiv.textContent = 'Poshmark account connected successfully!';
+                        successDiv.style.display = 'block';
+                        setTimeout(() => {{
+                            window.close();
+                        }}, 2000);
+                    }} else {{
+                        const data = await response.json();
+                        errorDiv.textContent = data.detail || 'Connection failed. Please try again.';
+                        errorDiv.style.display = 'block';
+                    }}
+                }} catch (error) {{
+                    errorDiv.textContent = 'An error occurred. Please try again.';
+                    errorDiv.style.display = 'block';
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@router.post("/poshmark/connect/callback")
+async def poshmark_connect_callback(
+    state: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Poshmark 연결 콜백 (폼 제출 처리)
+    eBay OAuth 콜백과 유사한 구조
+    """
+    
+    if not state or not username or not password:
+        raise HTTPException(status_code=400, detail="Missing username, password, or state")
+    
+    try:
+        user_id = int(state)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid state")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
     # 기존 계정 확인
     account = (
         db.query(MarketplaceAccount)
         .filter(
-            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.user_id == user.id,
             MarketplaceAccount.marketplace == "poshmark",
         )
         .first()
@@ -1169,7 +1410,7 @@ async def poshmark_connect(
     
     if not account:
         account = MarketplaceAccount(
-            user_id=current_user.id,
+            user_id=user.id,
             marketplace="poshmark",
         )
         db.add(account)
@@ -1182,10 +1423,62 @@ async def poshmark_connect(
     db.commit()
     db.refresh(account)
     
-    return {
-        "message": "Poshmark account connected",
-        "username": username,
-    }
+    # 성공 페이지 반환 (eBay 스타일)
+    html_content = f"""
+    <html>
+    <head>
+        <title>Poshmark Connected</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 500px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                text-align: center;
+            }}
+            h2 {{ color: #28a745; }}
+            .success-icon {{
+                font-size: 48px;
+                color: #28a745;
+                margin: 20px 0;
+            }}
+            button {{
+                background: #6c757d;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                margin-top: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success-icon">✓</div>
+            <h2>Poshmark Connected!</h2>
+            <p>Your Poshmark account has been successfully connected.</p>
+            <p style="color: #666; font-size: 14px;">Username: {username}</p>
+            <p>You can close this window.</p>
+            <button onclick="window.close()">Close</button>
+        </div>
+        <script>
+            // 자동으로 창 닫기 (일부 브라우저에서는 작동하지 않을 수 있음)
+            setTimeout(function() {{
+                window.close();
+            }}, 3000);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @router.get("/poshmark/status")
