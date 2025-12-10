@@ -308,28 +308,50 @@ async def publish_listing(
     """
     username, password = await get_poshmark_credentials(db, user)
     
-    async with async_playwright() as p:
-        # 브라우저 실행 (headless=False로 디버깅 가능)
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        )
-        page = await context.new_page()
-        
-        try:
-            # 로그인
-            login_success = await login_to_poshmark(page, username, password)
-            if not login_success:
-                raise PoshmarkAuthError("Login failed")
+    try:
+        async with async_playwright() as p:
+            # 브라우저 실행 (headless=False로 디버깅 가능)
+            try:
+                browser = await p.chromium.launch(headless=True)
+            except Exception as e:
+                if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e):
+                    raise PoshmarkPublishError(
+                        "Playwright browser not installed. Please run 'playwright install chromium' "
+                        "or restart the server to auto-install browsers."
+                    )
+                raise
             
-            # 리스팅 업로드
-            result = await publish_listing_to_poshmark(
-                page, listing, listing_images, base_url, settings
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
+            page = await context.new_page()
             
-            return result
-            
-        finally:
-            await browser.close()
+            try:
+                # 로그인
+                login_success = await login_to_poshmark(page, username, password)
+                if not login_success:
+                    raise PoshmarkAuthError("Login failed")
+                
+                # 리스팅 업로드
+                result = await publish_listing_to_poshmark(
+                    page, listing, listing_images, base_url, settings
+                )
+                
+                return result
+                
+            finally:
+                try:
+                    await browser.close()
+                except:
+                    pass
+    except PoshmarkPublishError:
+        raise
+    except Exception as e:
+        if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e):
+            raise PoshmarkPublishError(
+                "Playwright browser not installed. Please run 'playwright install chromium' "
+                "or restart the server to auto-install browsers."
+            )
+        raise PoshmarkPublishError(f"Failed to launch browser: {str(e)}")
 
