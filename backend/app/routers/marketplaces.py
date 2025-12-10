@@ -61,6 +61,145 @@ def _sanitize_sku(raw_sku: str) -> str:
     return sanitized
 
 # ---------------------------------------------------------
+# [FIX] Helper: Create Default eBay Business Policies
+# ---------------------------------------------------------
+async def _create_default_policies(db: Session, user: User):
+    """
+    Creates default payment, return, and fulfillment policies if they don't exist.
+    Returns a dict with policy IDs.
+    """
+    policies_created = {}
+    
+    try:
+        # Create Fulfillment Policy
+        fulfillment_payload = {
+            "name": "Standard Shipping",
+            "marketplaceId": "EBAY_US",
+            "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
+            "handlingTime": {
+                "value": 1,
+                "unit": "BUSINESS_DAY"
+            },
+            "shippingOptions": [
+                {
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "shippingCarrierCode": "USPS",
+                            "shippingServiceCode": "USPSPriority",
+                            "freeShipping": False
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        fulfillment_resp = await ebay_post(
+            db=db,
+            user=user,
+            path="/sell/account/v1/fulfillment_policy",
+            json=fulfillment_payload
+        )
+        
+        if fulfillment_resp.status_code in (200, 201):
+            policies_created["fulfillmentPolicyId"] = fulfillment_resp.json().get("fulfillmentPolicyId")
+            print(f">>> Created fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+        else:
+            # Check if policy already exists
+            try:
+                error_body = fulfillment_resp.json()
+                if "already exists" in str(error_body).lower():
+                    # Try to get existing policies
+                    existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
+                    if existing.status_code == 200:
+                        existing_policies = existing.json().get("fulfillmentPolicies", [])
+                        if existing_policies:
+                            policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
+            except:
+                pass
+        
+        # Create Payment Policy
+        payment_payload = {
+            "name": "Standard Payment",
+            "marketplaceId": "EBAY_US",
+            "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
+            "paymentMethods": [
+                {
+                    "paymentMethodType": "PAYPAL"
+                }
+            ],
+            "immediatePay": False
+        }
+        
+        payment_resp = await ebay_post(
+            db=db,
+            user=user,
+            path="/sell/account/v1/payment_policy",
+            json=payment_payload
+        )
+        
+        if payment_resp.status_code in (200, 201):
+            policies_created["paymentPolicyId"] = payment_resp.json().get("paymentPolicyId")
+            print(f">>> Created payment policy: {policies_created['paymentPolicyId']}")
+        else:
+            try:
+                error_body = payment_resp.json()
+                if "already exists" in str(error_body).lower():
+                    existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
+                    if existing.status_code == 200:
+                        existing_policies = existing.json().get("paymentPolicies", [])
+                        if existing_policies:
+                            policies_created["paymentPolicyId"] = existing_policies[0].get("paymentPolicyId")
+            except:
+                pass
+        
+        # Create Return Policy
+        return_payload = {
+            "name": "30-Day Returns",
+            "marketplaceId": "EBAY_US",
+            "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
+            "returnsAccepted": True,
+            "returnPeriod": {
+                "value": 30,
+                "unit": "DAY"
+            },
+            "refundMethod": "MONEY_BACK",
+            "returnShippingCostPayer": "BUYER"
+        }
+        
+        return_resp = await ebay_post(
+            db=db,
+            user=user,
+            path="/sell/account/v1/return_policy",
+            json=return_payload
+        )
+        
+        if return_resp.status_code in (200, 201):
+            policies_created["returnPolicyId"] = return_resp.json().get("returnPolicyId")
+            print(f">>> Created return policy: {policies_created['returnPolicyId']}")
+        else:
+            try:
+                error_body = return_resp.json()
+                if "already exists" in str(error_body).lower():
+                    existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
+                    if existing.status_code == 200:
+                        existing_policies = existing.json().get("returnPolicies", [])
+                        if existing_policies:
+                            policies_created["returnPolicyId"] = existing_policies[0].get("returnPolicyId")
+            except:
+                pass
+        
+        if len(policies_created) == 3:
+            return policies_created
+        else:
+            print(f">>> Warning: Only created {len(policies_created)}/3 policies")
+            return None
+            
+    except Exception as e:
+        print(f">>> Error creating default policies: {e}")
+        return None
+
+# ---------------------------------------------------------
 # [FIX] Helper: Get eBay Business Policies
 # ---------------------------------------------------------
 async def _get_ebay_policies(db: Session, user: User):
@@ -121,6 +260,11 @@ async def _get_ebay_policies(db: Session, user: User):
             }
         else:
             print(f">>> Warning: Missing policies - Fulfillment: {fulfillment_policy_id}, Payment: {payment_policy_id}, Return: {return_policy_id}")
+            # Try to create default policies
+            print(f">>> Attempting to create default policies...")
+            created_policies = await _create_default_policies(db, user)
+            if created_policies:
+                return created_policies
             return None
             
     except Exception as e:
@@ -248,8 +392,13 @@ async def publish_to_ebay(
     if not policies:
         raise HTTPException(
             status_code=400,
-            detail="eBay business policies not configured. Please set up payment, return, and fulfillment policies in your eBay account."
+            detail={
+                "message": "eBay business policies not configured",
+                "error": "MISSING_POLICIES",
+                "instructions": "The system attempted to create default policies but failed. Please ensure your eBay account is opted into Business Policies and try again, or manually create payment, return, and fulfillment policies in your eBay Seller Hub."
+            }
         )
+    print(f">>> Using Policies - Fulfillment: {policies['fulfillmentPolicyId']}, Payment: {policies['paymentPolicyId']}, Return: {policies['returnPolicyId']}")
 
     # 4. Create Inventory Item (PUT)
     inventory_payload = {
