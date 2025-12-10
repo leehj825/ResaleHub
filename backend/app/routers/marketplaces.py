@@ -105,9 +105,13 @@ async def _create_default_policies(db: Session, user: User):
             policies_created["fulfillmentPolicyId"] = fulfillment_resp.json().get("fulfillmentPolicyId")
             print(f">>> Created fulfillment policy: {policies_created['fulfillmentPolicyId']}")
         else:
-            # Check if policy already exists
+            # Check if policy already exists or get error details
             try:
                 error_body = fulfillment_resp.json()
+                error_str = json.dumps(error_body, indent=2)
+                print(f">>> Fulfillment policy creation failed (Status: {fulfillment_resp.status_code})")
+                print(f">>> Response: {error_str}")
+                
                 if "already exists" in str(error_body).lower():
                     # Try to get existing policies
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
@@ -115,8 +119,9 @@ async def _create_default_policies(db: Session, user: User):
                         existing_policies = existing.json().get("fulfillmentPolicies", [])
                         if existing_policies:
                             policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
-            except:
-                pass
+                            print(f">>> Using existing fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+            except Exception as e:
+                print(f">>> Error processing fulfillment policy response: {e}")
         
         # Create Payment Policy
         payment_payload = {
@@ -144,14 +149,19 @@ async def _create_default_policies(db: Session, user: User):
         else:
             try:
                 error_body = payment_resp.json()
+                error_str = json.dumps(error_body, indent=2)
+                print(f">>> Payment policy creation failed (Status: {payment_resp.status_code})")
+                print(f">>> Response: {error_str}")
+                
                 if "already exists" in str(error_body).lower():
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/payment_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("paymentPolicies", [])
                         if existing_policies:
                             policies_created["paymentPolicyId"] = existing_policies[0].get("paymentPolicyId")
-            except:
-                pass
+                            print(f">>> Using existing payment policy: {policies_created['paymentPolicyId']}")
+            except Exception as e:
+                print(f">>> Error processing payment policy response: {e}")
         
         # Create Return Policy
         return_payload = {
@@ -180,14 +190,19 @@ async def _create_default_policies(db: Session, user: User):
         else:
             try:
                 error_body = return_resp.json()
+                error_str = json.dumps(error_body, indent=2)
+                print(f">>> Return policy creation failed (Status: {return_resp.status_code})")
+                print(f">>> Response: {error_str}")
+                
                 if "already exists" in str(error_body).lower():
                     existing = await ebay_get(db=db, user=user, path="/sell/account/v1/return_policy", params={"marketplace_id": "EBAY_US"})
                     if existing.status_code == 200:
                         existing_policies = existing.json().get("returnPolicies", [])
                         if existing_policies:
                             policies_created["returnPolicyId"] = existing_policies[0].get("returnPolicyId")
-            except:
-                pass
+                            print(f">>> Using existing return policy: {policies_created['returnPolicyId']}")
+            except Exception as e:
+                print(f">>> Error processing return policy response: {e}")
         
         if len(policies_created) == 3:
             return policies_created
