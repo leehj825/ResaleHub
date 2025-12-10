@@ -31,6 +31,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
   bool _updatingStatus = false;
   bool _publishing = false;
+  bool _preparingOffer = false;
 
   final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
@@ -189,6 +190,25 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
+  Future<void> _prepareEbayOffer() async {
+    setState(() => _preparingOffer = true);
+    try {
+      await _listingService.prepareEbayOffer(_listing.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Added to eBay inventory (offer staged, not published).')),
+      );
+      await _reloadListing();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to add to eBay inventory: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _preparingOffer = false);
+    }
+  }
+
   Future<void> _publishToPoshmark() async {
     setState(() => _publishing = true);
     try {
@@ -341,13 +361,26 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                     ),
                 ] else ...[
                   const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _publishing ? null : _publishToEbay,
-                      icon: const Icon(Icons.upload),
-                      label: const Text("Publish to eBay"),
-                    ),
+                  Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: (_publishing || _preparingOffer) ? null : _prepareEbayOffer,
+                          icon: const Icon(Icons.inventory_2_outlined),
+                          label: const Text("Add to eBay (Inventory + Offer)"),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: (_publishing || _preparingOffer) ? null : _publishToEbay,
+                          icon: const Icon(Icons.upload),
+                          label: const Text("Publish to eBay"),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],

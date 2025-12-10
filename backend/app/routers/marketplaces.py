@@ -127,72 +127,81 @@ async def _create_default_policies(db: Session, user: User):
     policies_created = {}
     
     try:
-        # Create Fulfillment Policy
-        fulfillment_payload = {
-            "name": "Standard Shipping",
-            "marketplaceId": "EBAY_US",
-            "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
-            "handlingTime": {
-                "value": 1,
-                "unit": "DAY"  # eBay expects DAY here
-            },
-            "shippingOptions": [
-                {
-                    "optionType": "DOMESTIC",  # Required field
-                    "costType": "FLAT_RATE",
-                    "shippingServices": [
-                        {
-                            "shippingCarrierCode": "USPS",
-                            # Use a widely-accepted domestic service for sandbox
-                            "shippingServiceCode": "USPSGroundAdvantage",
-                            "freeShipping": False
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        fulfillment_resp = await ebay_post(
-            db=db,
-            user=user,
-            path="/sell/account/v1/fulfillment_policy",
-            json=fulfillment_payload
-        )
-        
-        if fulfillment_resp.status_code in (200, 201):
-            policies_created["fulfillmentPolicyId"] = fulfillment_resp.json().get("fulfillmentPolicyId")
-            print(f">>> Created fulfillment policy: {policies_created['fulfillmentPolicyId']}")
-        else:
-            # Check if policy already exists or get error details
-            try:
-                error_body = fulfillment_resp.json()
-                error_str = json.dumps(error_body, indent=2)
-                print(f">>> Fulfillment policy creation failed (Status: {fulfillment_resp.status_code})")
-                print(f">>> Response: {error_str}")
-                
-                if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
-                    try:
-                        existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
-                        if existing.status_code == 200:
-                            existing_policies = existing.json().get("fulfillmentPolicies", [])
-                            if existing_policies:
-                                policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
-                                print(f">>> Using existing fulfillment policy: {policies_created['fulfillmentPolicyId']}")
-                    except Exception as e:
-                        print(f">>> Error reading existing fulfillment policies: {e}")
-            except Exception as e:
-                print(f">>> Error processing fulfillment policy response: {e}")
-            # Fallback: if creation failed for any reason, try to reuse first existing policy
-            if "fulfillmentPolicyId" not in policies_created:
+        # Create Fulfillment Policy (try multiple common shipping services)
+        shipping_services_to_try = [
+            "USPSGroundAdvantage",
+            "USPSFirstClass",
+            "USPSPriorityMail",
+        ]
+        fulfillment_created = False
+        for svc_code in shipping_services_to_try:
+            fulfillment_payload = {
+                "name": f"Standard Shipping ({svc_code})",
+                "marketplaceId": "EBAY_US",
+                "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
+                "handlingTime": {
+                    "value": 1,
+                    "unit": "DAY"  # eBay expects DAY here
+                },
+                "shippingOptions": [
+                    {
+                        "optionType": "DOMESTIC",  # Required field
+                        "costType": "FLAT_RATE",
+                        "shippingServices": [
+                            {
+                                "shippingCarrierCode": "USPS",
+                                "shippingServiceCode": svc_code,
+                                "freeShipping": False
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            fulfillment_resp = await ebay_post(
+                db=db,
+                user=user,
+                path="/sell/account/v1/fulfillment_policy",
+                json=fulfillment_payload
+            )
+            
+            if fulfillment_resp.status_code in (200, 201):
+                policies_created["fulfillmentPolicyId"] = fulfillment_resp.json().get("fulfillmentPolicyId")
+                print(f">>> Created fulfillment policy with {svc_code}: {policies_created['fulfillmentPolicyId']}")
+                fulfillment_created = True
+                break
+            else:
                 try:
-                    existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
-                    if existing.status_code == 200:
-                        existing_policies = existing.json().get("fulfillmentPolicies", [])
-                        if existing_policies:
-                            policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
-                            print(f">>> Using fallback fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+                    error_body = fulfillment_resp.json()
+                    error_str = json.dumps(error_body, indent=2)
+                    print(f">>> Fulfillment policy creation failed (Status: {fulfillment_resp.status_code}) for {svc_code}")
+                    print(f">>> Response: {error_str}")
+                    
+                    if "already exists" in str(error_body).lower() or "duplicate" in str(error_body).lower():
+                        try:
+                            existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
+                            if existing.status_code == 200:
+                                existing_policies = existing.json().get("fulfillmentPolicies", [])
+                                if existing_policies:
+                                    policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
+                                    print(f">>> Using existing fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+                                    fulfillment_created = True
+                                    break
+                        except Exception as e:
+                            print(f">>> Error reading existing fulfillment policies: {e}")
                 except Exception as e:
-                    print(f">>> Error during fulfillment policy fallback: {e}")
+                    print(f">>> Error processing fulfillment policy response: {e}")
+        # Fallback: if creation failed for any reason, try to reuse first existing policy
+        if "fulfillmentPolicyId" not in policies_created:
+            try:
+                existing = await ebay_get(db=db, user=user, path="/sell/account/v1/fulfillment_policy", params={"marketplace_id": "EBAY_US"})
+                if existing.status_code == 200:
+                    existing_policies = existing.json().get("fulfillmentPolicies", [])
+                    if existing_policies:
+                        policies_created["fulfillmentPolicyId"] = existing_policies[0].get("fulfillmentPolicyId")
+                        print(f">>> Using fallback fulfillment policy: {policies_created['fulfillmentPolicyId']}")
+            except Exception as e:
+                print(f">>> Error during fulfillment policy fallback: {e}")
         
         # Create Payment Policy
         payment_payload = {
@@ -332,6 +341,19 @@ async def _get_ebay_policies(db: Session, user: User):
     Returns a dict with policy IDs or None if policies are not set up.
     """
     try:
+        # First, honor explicit overrides from settings if provided
+        override_policy_ids = {}
+        if getattr(settings, "ebay_fulfillment_policy_id", None):
+            override_policy_ids["fulfillmentPolicyId"] = settings.ebay_fulfillment_policy_id
+        if getattr(settings, "ebay_payment_policy_id", None):
+            override_policy_ids["paymentPolicyId"] = settings.ebay_payment_policy_id
+        if getattr(settings, "ebay_return_policy_id", None):
+            override_policy_ids["returnPolicyId"] = settings.ebay_return_policy_id
+        # If all three supplied, return immediately
+        if len(override_policy_ids) == 3:
+            print(">>> Using configured eBay policy IDs from settings")
+            return override_policy_ids
+
         # Get fulfillment policies
         fulfillment_resp = await ebay_get(
             db=db,
@@ -375,6 +397,14 @@ async def _get_ebay_policies(db: Session, user: User):
         fulfillment_policy_id = get_policy_id(fulfillment_policies, "fulfillmentPolicyId")
         payment_policy_id = get_policy_id(payment_policies, "paymentPolicyId")
         return_policy_id = get_policy_id(return_policies, "returnPolicyId")
+
+        # Merge any provided overrides to fill gaps
+        if not fulfillment_policy_id and getattr(settings, "ebay_fulfillment_policy_id", None):
+            fulfillment_policy_id = settings.ebay_fulfillment_policy_id
+        if not payment_policy_id and getattr(settings, "ebay_payment_policy_id", None):
+            payment_policy_id = settings.ebay_payment_policy_id
+        if not return_policy_id and getattr(settings, "ebay_return_policy_id", None):
+            return_policy_id = settings.ebay_return_policy_id
         
         if fulfillment_policy_id and payment_policy_id and return_policy_id:
             return {

@@ -253,6 +253,26 @@ class ListingService {
     }
   }
 
+  Future<void> prepareEbayOffer(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/$listingId/prepare-offer');
+    final res = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to prepare eBay offer: ${res.body}');
+    }
+  }
+
   Future<void> publishToPoshmark(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();

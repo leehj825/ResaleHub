@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     ebay_client_secret: str
     ebay_redirect_uri: str
     ebay_environment: str = "sandbox"
+    ebay_fulfillment_policy_id: str | None = None
+    ebay_payment_policy_id: str | None = None
+    ebay_return_policy_id: str | None = None
 
     # pydantic-settings v2 방식 설정
     model_config = SettingsConfigDict(
