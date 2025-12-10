@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.listing import Listing
+from app.models.listing_image import ListingImage
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
@@ -526,12 +527,86 @@ async def delete_ebay_inventory_item(
 
     return {"message": "Deleted", "sku": sku}
 
+
+@router.post("/ebay/sync-inventory")
+async def sync_ebay_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Syncs eBay inventory with local listings by matching SKU.
+    Updates ListingMarketplace records for items found in eBay inventory.
+    """
+    try:
+        # Get all eBay inventory items
+        resp = await ebay_get(
+            db=db,
+            user=current_user,
+            path="/sell/inventory/v1/inventory_item",
+            params={"limit": "200", "offset": "0"}
+        )
+        
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch eBay inventory: {resp.text}")
+        
+        ebay_data = resp.json()
+        ebay_items = ebay_data.get("inventoryItems", [])
+        
+        synced_count = 0
+        for ebay_item in ebay_items:
+            sku = ebay_item.get("sku")
+            if not sku:
+                continue
+            
+            # Find local listing by SKU
+            listing = db.query(Listing).filter(
+                Listing.owner_id == current_user.id,
+                Listing.sku == sku
+            ).first()
+            
+            if not listing:
+                continue
+            
+            # Get or create ListingMarketplace record
+            lm = db.query(ListingMarketplace).filter(
+                ListingMarketplace.listing_id == listing.id,
+                ListingMarketplace.marketplace == "ebay"
+            ).first()
+            
+            if not lm:
+                lm = ListingMarketplace(listing_id=listing.id, marketplace="ebay")
+                db.add(lm)
+            
+            # Update with eBay data
+            lm.sku = sku
+            # Check if there's an offer (inventory item might exist without offer)
+            # We'll check offers separately if needed, but for now just mark as in inventory
+            if lm.status != "published":
+                lm.status = "offer_created"  # or "in_inventory" if we want a different status
+            
+            synced_count += 1
+        
+        db.commit()
+        
+        return {
+            "message": "Sync completed",
+            "ebay_items_found": len(ebay_items),
+            "local_listings_matched": synced_count
+        }
+        
+    except EbayAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
 # --------------------------------------
 # Publish to eBay (Main Logic)
 # --------------------------------------
 @router.post("/ebay/{listing_id}/publish")
 async def publish_to_ebay(
     listing_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -567,15 +642,31 @@ async def publish_to_ebay(
         elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
         elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
 
-    # Image Handling
+    # Image Handling - Get images from database
     image_urls = []
-    raw_images = getattr(listing, "image_urls", []) or []
+    listing_images = (
+        db.query(ListingImage)
+        .filter(ListingImage.listing_id == listing_id)
+        .order_by(ListingImage.sort_order.asc())
+        .all()
+    )
     
-    # Skip localhost images as eBay cannot access them
-    if isinstance(raw_images, list):
-        for img in raw_images:
-            if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
-                image_urls.append(img)
+    # Build base URL from request
+    base_url = str(request.base_url).rstrip('/')
+    for img in listing_images:
+        # Construct full URL: http://host:port/media/listings/1/000.jpeg
+        full_url = f"{base_url}{settings.media_url}/{img.file_path}"
+        # Only add if it's a valid HTTP URL (not localhost)
+        if full_url.startswith("http") and "127.0.0.1" not in full_url and "localhost" not in full_url:
+            image_urls.append(full_url)
+    
+    # Fallback to image_urls from listing if no DB images
+    if not image_urls:
+        raw_images = getattr(listing, "image_urls", []) or []
+        if isinstance(raw_images, list):
+            for img in raw_images:
+                if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
+                    image_urls.append(img)
 
     # 3. [FIX] Ensure Merchant Location Exists (Solves Error 25002)
     merchant_location_key = await _ensure_merchant_location(db, current_user)
@@ -600,7 +691,6 @@ async def publish_to_ebay(
         "product": {
             "title": title,
             "description": description,
-            # "imageUrls": image_urls # Uncomment only if using public URLs
         },
         "condition": ebay_condition,
         "availability": {
@@ -609,6 +699,11 @@ async def publish_to_ebay(
             }
         }
     }
+    
+    # Add images if available (eBay requires publicly accessible URLs)
+    if image_urls:
+        inventory_payload["product"]["imageUrls"] = image_urls[:12]  # eBay allows up to 12 images
+        print(f">>> Adding {len(image_urls)} images to inventory item")
 
     try:
         encoded_sku = quote(sku)
@@ -766,6 +861,7 @@ async def publish_to_ebay(
 @router.post("/ebay/{listing_id}/prepare-offer")
 async def create_inventory_and_offer(
     listing_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -799,12 +895,31 @@ async def create_inventory_and_offer(
         elif "good" in c or "used" in c: ebay_condition = "USED_GOOD"
         elif "parts" in c: ebay_condition = "FOR_PARTS_OR_NOT_WORKING"
 
+    # Get images from database and build full URLs
     image_urls = []
-    raw_images = getattr(listing, "image_urls", []) or []
-    if isinstance(raw_images, list):
-        for img in raw_images:
-            if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
-                image_urls.append(img)
+    listing_images = (
+        db.query(ListingImage)
+        .filter(ListingImage.listing_id == listing_id)
+        .order_by(ListingImage.sort_order.asc())
+        .all()
+    )
+    
+    # Build base URL from request
+    base_url = str(request.base_url).rstrip('/')
+    for img in listing_images:
+        # Construct full URL: http://host:port/media/listings/1/000.jpeg
+        full_url = f"{base_url}{settings.media_url}/{img.file_path}"
+        # Only add if it's a valid HTTP URL (not localhost)
+        if full_url.startswith("http") and "127.0.0.1" not in full_url and "localhost" not in full_url:
+            image_urls.append(full_url)
+    
+    # Fallback to image_urls from listing if no DB images
+    if not image_urls:
+        raw_images = getattr(listing, "image_urls", []) or []
+        if isinstance(raw_images, list):
+            for img in raw_images:
+                if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
+                    image_urls.append(img)
 
     merchant_location_key = await _ensure_merchant_location(db, current_user)
 
@@ -825,7 +940,6 @@ async def create_inventory_and_offer(
         "product": {
             "title": title,
             "description": description,
-            # "imageUrls": image_urls
         },
         "condition": ebay_condition,
         "availability": {
@@ -834,6 +948,11 @@ async def create_inventory_and_offer(
             }
         }
     }
+    
+    # Add images if available (eBay requires publicly accessible URLs)
+    if image_urls:
+        inventory_payload["product"]["imageUrls"] = image_urls[:12]  # eBay allows up to 12 images
+        print(f">>> Adding {len(image_urls)} images to inventory item")
 
     try:
         encoded_sku = quote(sku)

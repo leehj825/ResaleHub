@@ -267,6 +267,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     
     bool isEbayPublished = (ebayInfo.listingUrl != null && ebayInfo.listingUrl!.isNotEmpty) || 
                            ebayInfo.status == 'published';
+    bool isEbayInInventory = ebayInfo.status == 'offer_created' || ebayInfo.offerId != null;
 
     // 2. Poshmark 정보
     final poshInfo = _listing.marketplaces.firstWhere(
@@ -306,13 +307,25 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: isEbayPublished ? Colors.green.shade100 : Colors.grey.shade200,
+                        color: isEbayPublished 
+                            ? Colors.green.shade100 
+                            : isEbayInInventory 
+                                ? Colors.blue.shade100 
+                                : Colors.grey.shade200,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        isEbayPublished ? "Published" : "Not Listed",
+                        isEbayPublished 
+                            ? "Published" 
+                            : isEbayInInventory 
+                                ? "In Inventory" 
+                                : "Not Listed",
                         style: TextStyle(
-                          color: isEbayPublished ? Colors.green.shade800 : Colors.grey.shade800,
+                          color: isEbayPublished 
+                              ? Colors.green.shade800 
+                              : isEbayInInventory 
+                                  ? Colors.blue.shade800 
+                                  : Colors.grey.shade800,
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
@@ -321,7 +334,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   ],
                 ),
                 
-                if (isEbayPublished) ...[
+                if (isEbayPublished || isEbayInInventory) ...[
                   const Divider(height: 24),
                   if (ebayInfo.externalItemId != null)
                     _buildDetailRow("Item ID", ebayInfo.externalItemId!, copyable: true),

@@ -130,4 +130,29 @@ class MarketplaceService {
       throw Exception('Failed to delete item: ${res.body}');
     }
   }
+
+  /// Sync eBay inventory with local listings
+  Future<Map<String, dynamic>> syncEbayInventory() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/sync-inventory');
+    final res = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to sync inventory: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data;
+  }
 }
