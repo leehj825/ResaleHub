@@ -61,6 +61,7 @@ async def verify_poshmark_credentials(username: str, password: str) -> bool:
     """
     Poshmark 자격 증명 검증 (연결 시 사용)
     실제 로그인을 시도하여 자격 증명이 유효한지 확인합니다.
+    빠른 검증을 위해 타임아웃을 줄입니다.
     """
     try:
         async with async_playwright() as p:
@@ -72,14 +73,174 @@ async def verify_poshmark_credentials(username: str, password: str) -> bool:
             page = await context.new_page()
             
             try:
-                # 로그인 시도
-                login_success = await login_to_poshmark(page, username, password)
+                # 빠른 로그인 검증 (타임아웃 단축)
+                print(f">>> Starting quick login verification...")
+                login_success = await login_to_poshmark_quick(page, username, password)
                 return login_success
             finally:
                 await browser.close()
     except Exception as e:
         print(f">>> Credential verification error: {e}")
         return False
+
+
+async def login_to_poshmark_quick(page: Page, username: str, password: str) -> bool:
+    """
+    빠른 Poshmark 로그인 검증 (연결 시 사용)
+    타임아웃을 줄여서 빠르게 검증합니다.
+    """
+    try:
+        print(f">>> Navigating to Poshmark login page (quick verification)...")
+        # 더 짧은 타임아웃으로 페이지 로드
+        await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(1)  # 최소 대기
+        
+        # 이메일/사용자명 입력 필드 찾기 (빠른 검증)
+        email_selectors = [
+            'input[type="email"]',
+            'input[type="text"][name*="email" i]',
+            'input[type="text"][name*="username" i]',
+            'input[name="login_form[username_email]"]',
+            'input[placeholder*="email" i]',
+            'input[placeholder*="username" i]',
+        ]
+        
+        email_field = None
+        for selector in email_selectors:
+            try:
+                email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                if email_field:
+                    print(f">>> Found email field: {selector}")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        if not email_field:
+            raise PoshmarkAuthError("Could not find email/username input field")
+        
+        await email_field.fill(username)
+        print(f">>> Filled username")
+        
+        # 비밀번호 입력 필드
+        password_selectors = [
+            'input[type="password"]',
+            'input[name*="password" i]',
+        ]
+        
+        password_field = None
+        for selector in password_selectors:
+            try:
+                password_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                if password_field:
+                    print(f">>> Found password field: {selector}")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        if not password_field:
+            raise PoshmarkAuthError("Could not find password input field")
+        
+        await password_field.fill(password)
+        print(f">>> Filled password")
+        
+        # 로그인 버튼 클릭
+        login_button_selectors = [
+            'button[type="submit"]',
+            'button:has-text("Sign in")',
+            'button:has-text("Log in")',
+        ]
+        
+        login_button = None
+        for selector in login_button_selectors:
+            try:
+                login_button = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                if login_button:
+                    print(f">>> Found login button: {selector}")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        if not login_button:
+            raise PoshmarkAuthError("Could not find login button")
+        
+        await login_button.click()
+        print(f">>> Clicked login button")
+        
+        # 로그인 완료 대기 (짧은 타임아웃)
+        try:
+            # URL 변경 또는 에러 메시지 확인
+            await page.wait_for_function(
+                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error, [class*=\"error\" i], [role=\"alert\"]') !== null",
+                timeout=10000
+            )
+        except:
+            # 타임아웃이어도 현재 URL 확인
+            pass
+        
+        # 로그인 성공 확인
+        current_url = page.url
+        print(f">>> After login, URL: {current_url}")
+        
+        # 에러 메시지 확인
+        error_selectors = [
+            '.error',
+            '[class*="error" i]',
+            '[role="alert"]',
+            'text=/invalid|incorrect|wrong|failed/i',
+        ]
+        for selector in error_selectors:
+            try:
+                error_element = await page.query_selector(selector)
+                if error_element:
+                    error_text = await error_element.inner_text()
+                    if error_text and len(error_text.strip()) > 0:
+                        print(f">>> Login error found: {error_text}")
+                        raise PoshmarkAuthError(f"Login failed: {error_text}")
+            except PoshmarkAuthError:
+                raise
+            except:
+                pass
+        
+        # URL이 /login이 아니면 성공으로 간주
+        if "/login" not in current_url.lower() and "login" not in current_url.lower():
+            print(f">>> Login verification successful (redirected away from login page)")
+            return True
+        
+        # 사용자 메뉴 확인 (빠른 확인)
+        user_menu_selectors = [
+            'a[href*="/user/"]',
+            'a[href*="/closet/"]',
+            'button[aria-label*="Account" i]',
+        ]
+        
+        for selector in user_menu_selectors:
+            try:
+                await page.wait_for_selector(selector, timeout=3000)
+                print(f">>> Login verification successful (found user menu)")
+                return True
+            except PlaywrightTimeoutError:
+                continue
+        
+        # 여전히 로그인 페이지에 있으면 실패
+        if "/login" in current_url.lower():
+            raise PoshmarkAuthError("Login failed - still on login page")
+        
+        # 불확실하지만 로그인 페이지가 아니면 성공으로 간주
+        print(f">>> Login verification successful (not on login page)")
+        return True
+        
+    except PlaywrightTimeoutError as e:
+        error_msg = str(e)
+        if "timeout" in error_msg.lower():
+            raise PoshmarkAuthError(
+                f"Login verification timeout: Could not complete login within time limit. "
+                f"This may indicate invalid credentials or network issues."
+            )
+        raise PoshmarkAuthError(f"Login timeout: {error_msg}")
+    except PoshmarkAuthError:
+        raise
+    except Exception as e:
+        raise PoshmarkAuthError(f"Login verification failed: {str(e)}")
 
 
 async def login_to_poshmark(page: Page, username: str, password: str) -> bool:
