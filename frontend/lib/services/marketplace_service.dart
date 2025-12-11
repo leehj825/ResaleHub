@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'package:frontend/models/ebay_item.dart'; // [필수] Step 1에서 만든 모델 임포트
+import 'package:frontend/models/poshmark_item.dart';
 import 'auth_service.dart';
 
 class MarketplaceService {
@@ -154,5 +155,107 @@ class MarketplaceService {
 
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     return data;
+  }
+
+  // ============================================
+  // Poshmark Inventory Methods
+  // ============================================
+
+  /// Poshmark 인벤토리 조회
+  Future<List<PoshmarkItem>> getPoshmarkInventory() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load Poshmark inventory: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body);
+    
+    // Poshmark 응답 구조: { "items": [ ... ], "total": ... }
+    final List<dynamic> itemsJson = data['items'] ?? [];
+
+    // JSON 리스트를 PoshmarkItem 객체 리스트로 변환
+    return itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
+  }
+
+  // ============================================
+  // Poshmark Connection Methods
+  // ============================================
+
+  /// Poshmark 연결 여부 확인
+  Future<bool> isPoshmarkConnected() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) throw Exception('Not logged in');
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/status');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to get Poshmark status: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data['connected'] == true;
+  }
+
+  /// Poshmark 연결 URL 가져오기 (eBay 스타일)
+  Future<String> getPoshmarkConnectUrl() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) throw Exception('Not logged in');
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/connect');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to get Poshmark connect URL: ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data['connect_url'] as String;
+  }
+
+  /// Poshmark 연결 해제
+  Future<void> disconnectPoshmark() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) throw Exception('Not logged in');
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/disconnect');
+
+    final response = await http.delete(
+      url,
+      headers: {
+        "Authorization": "Bearer $token",
+      },
+    );
+
+    if (response.statusCode >= 400) {
+      throw Exception('Failed to disconnect Poshmark: ${response.body}');
+    }
   }
 }

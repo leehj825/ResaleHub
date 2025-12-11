@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,11 @@ from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 
 from app.services.ebay_client import ebay_get, ebay_post, ebay_put, ebay_delete, EbayAuthError
+from app.services.poshmark_client import (
+    publish_listing as poshmark_publish_listing,
+    PoshmarkAuthError,
+    PoshmarkPublishError,
+)
 
 router = APIRouter(
     prefix="/marketplaces",
@@ -1138,6 +1143,495 @@ def ebay_status(db: Session = Depends(get_db), current_user: User = Depends(get_
     account = db.query(MarketplaceAccount).filter(MarketplaceAccount.user_id == current_user.id, MarketplaceAccount.marketplace == "ebay").first()
     return {"connected": account is not None and account.access_token is not None, "marketplace": "ebay"}
 
+# --------------------------------------
+# Poshmark Connection & Status (eBay 스타일)
+# --------------------------------------
+@router.get("/poshmark/connect")
+def poshmark_connect(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 연결 페이지 URL 반환 (eBay 스타일)
+    프론트엔드에서 이 URL로 리다이렉트하면 연결 폼 페이지가 표시됨
+    """
+    # Request에서 base URL 가져오기
+    base_url = str(request.base_url).rstrip('/')
+    connect_url = f"{base_url}/marketplaces/poshmark/connect/form?state={current_user.id}"
+    return {"connect_url": connect_url}
+
+
+@router.get("/poshmark/connect/form")
+def poshmark_connect_form(
+    request: Request,
+    state: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Poshmark 연결 폼 HTML 페이지 (eBay OAuth 콜백과 유사한 플로우)
+    """
+    try:
+        user_id = int(state)
+    except:
+        return HTMLResponse(
+            content="<html><body><p>Invalid connection request.</p></body></html>",
+            status_code=400
+        )
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return HTMLResponse(
+            content="<html><body><p>User not found.</p></body></html>",
+            status_code=404
+        )
+    
+    # 이미 연결된 계정 확인
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if account and account.username:
+        # 이미 연결됨
+        html_content = f"""
+        <html>
+        <head>
+            <title>Poshmark Connection</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    max-width: 500px;
+                    margin: 50px auto;
+                    padding: 20px;
+                    background: #f5f5f5;
+                }}
+                .container {{
+                    background: white;
+                    padding: 30px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }}
+                h2 {{ color: #333; }}
+                .success {{ color: #28a745; }}
+                .info {{ 
+                    background: #e7f3ff;
+                    padding: 15px;
+                    border-radius: 4px;
+                    margin: 20px 0;
+                }}
+                button {{
+                    background: #6c757d;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>Poshmark Account</h2>
+                <div class="info">
+                    <p class="success">✓ Already connected</p>
+                    <p><strong>Username:</strong> {account.username}</p>
+                </div>
+                <p>You can close this window.</p>
+                <button onclick="window.close()">Close</button>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
+    
+    # 연결 폼 표시
+    html_content = f"""
+    <html>
+    <head>
+        <title>Connect Poshmark Account</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 500px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            h2 {{ color: #333; }}
+            .form-group {{
+                margin-bottom: 20px;
+            }}
+            label {{
+                display: block;
+                margin-bottom: 5px;
+                color: #555;
+                font-weight: bold;
+            }}
+            input[type="text"],
+            input[type="password"] {{
+                width: 100%;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                box-sizing: border-box;
+                font-size: 14px;
+            }}
+            button {{
+                background: #e31837;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 16px;
+                width: 100%;
+            }}
+            button:hover {{
+                background: #c0142f;
+            }}
+            .error {{
+                color: #dc3545;
+                margin-top: 10px;
+                display: none;
+            }}
+            .success {{
+                color: #28a745;
+                margin-top: 10px;
+                display: none;
+            }}
+            .note {{
+                font-size: 12px;
+                color: #666;
+                margin-top: 5px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Connect Poshmark Account</h2>
+            <p style="color: #666; margin-bottom: 20px;">
+                Enter your Poshmark login credentials to connect your account.
+            </p>
+            <form id="connectForm" method="POST" action="{str(request.base_url).rstrip('/')}/marketplaces/poshmark/connect/callback">
+                <input type="hidden" name="state" value="{state}">
+                <div class="form-group">
+                    <label for="username">Username or Email</label>
+                    <input type="text" id="username" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required>
+                    <div class="note">Your password is stored securely and only used for automated listing uploads.</div>
+                </div>
+                <div class="error" id="errorMsg"></div>
+                <div class="success" id="successMsg"></div>
+                <div class="progress" id="progressMsg" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">Connecting...</div>
+                </div>
+                <button type="submit" id="submitBtn">Connect Poshmark</button>
+            </form>
+        </div>
+        <style>
+            .progress {{
+                margin: 20px 0;
+                padding: 15px;
+                background: #f0f0f0;
+                border-radius: 4px;
+            }}
+            .progress-bar {{
+                width: 100%;
+                height: 20px;
+                background: #e0e0e0;
+                border-radius: 10px;
+                overflow: hidden;
+                margin-bottom: 10px;
+            }}
+            .progress-fill {{
+                height: 100%;
+                background: linear-gradient(90deg, #e31837, #ff6b8a);
+                width: 0%;
+                transition: width 0.3s ease;
+                animation: pulse 1.5s ease-in-out infinite;
+            }}
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.7; }}
+            }}
+            .progress-text {{
+                text-align: center;
+                color: #333;
+                font-weight: 500;
+            }}
+            button:disabled {{
+                opacity: 0.6;
+                cursor: not-allowed;
+            }}
+        </style>
+        <script>
+            document.getElementById('connectForm').addEventListener('submit', async function(e) {{
+                e.preventDefault();
+                const formData = new FormData(this);
+                const errorDiv = document.getElementById('errorMsg');
+                const successDiv = document.getElementById('successMsg');
+                const progressDiv = document.getElementById('progressMsg');
+                const progressFill = document.getElementById('progressFill');
+                const progressText = document.getElementById('progressText');
+                const submitBtn = document.getElementById('submitBtn');
+                
+                errorDiv.style.display = 'none';
+                successDiv.style.display = 'none';
+                progressDiv.style.display = 'block';
+                submitBtn.disabled = true;
+                
+                // 진행 상황 업데이트 함수
+                function updateProgress(percent, text) {{
+                    progressFill.style.width = percent + '%';
+                    progressText.textContent = text;
+                }}
+                
+                // 단계별 진행 상황 표시
+                updateProgress(10, 'Preparing connection...');
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                updateProgress(20, 'Verifying credentials with Poshmark...');
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                try {{
+                    updateProgress(40, 'Logging into Poshmark...');
+                    const response = await fetch(this.action, {{
+                        method: 'POST',
+                        body: formData
+                    }});
+                    
+                    updateProgress(80, 'Finalizing connection...');
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    if (response.ok) {{
+                        updateProgress(100, 'Connection successful!');
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        
+                        progressDiv.style.display = 'none';
+                        successDiv.textContent = 'Poshmark account connected successfully!';
+                        successDiv.style.display = 'block';
+                        setTimeout(() => {{
+                            window.close();
+                        }}, 2000);
+                    }} else {{
+                        const data = await response.json();
+                        progressDiv.style.display = 'none';
+                        errorDiv.textContent = data.detail || 'Connection failed. Please try again.';
+                        errorDiv.style.display = 'block';
+                        submitBtn.disabled = false;
+                    }}
+                }} catch (error) {{
+                    progressDiv.style.display = 'none';
+                    errorDiv.textContent = 'An error occurred: ' + error.message + '. Please try again.';
+                    errorDiv.style.display = 'block';
+                    submitBtn.disabled = false;
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@router.post("/poshmark/connect/callback")
+async def poshmark_connect_callback(
+    state: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Poshmark 연결 콜백 (폼 제출 처리)
+    eBay OAuth 콜백과 유사한 구조
+    """
+    
+    if not state or not username or not password:
+        raise HTTPException(status_code=400, detail="Missing username, password, or state")
+    
+    try:
+        user_id = int(state)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid state")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # 실제 Poshmark 로그인 검증
+    print(f">>> Verifying Poshmark credentials for user {username}...")
+    from app.services.poshmark_client import verify_poshmark_credentials
+    
+    # Render.com에서는 headless=True, 로컬에서는 headless=False로 설정 가능
+    # 환경 변수로 제어 가능하도록 설정
+    import os
+    headless_mode = os.getenv("POSHMARK_HEADLESS", "true").lower() == "true"
+    
+    try:
+        login_success = await verify_poshmark_credentials(username, password, headless=headless_mode)
+        if not login_success:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid Poshmark credentials. Please check your username and password."
+            )
+        print(f">>> Poshmark credentials verified successfully")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f">>> Poshmark verification failed: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to verify Poshmark credentials: {str(e)}"
+        )
+    
+    # 기존 계정 확인
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if not account:
+        account = MarketplaceAccount(
+            user_id=user.id,
+            marketplace="poshmark",
+        )
+        db.add(account)
+    
+    # username과 password 저장 (password는 임시로 access_token 필드에 저장)
+    # TODO: 실제 운영 환경에서는 password를 bcrypt 등으로 암호화
+    account.username = username
+    account.access_token = password  # 임시 저장
+    
+    db.commit()
+    db.refresh(account)
+    
+    # 성공 페이지 반환 (eBay 스타일)
+    html_content = f"""
+    <html>
+    <head>
+        <title>Poshmark Connected</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 500px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                text-align: center;
+            }}
+            h2 {{ color: #28a745; }}
+            .success-icon {{
+                font-size: 48px;
+                color: #28a745;
+                margin: 20px 0;
+            }}
+            button {{
+                background: #6c757d;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                margin-top: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success-icon">✓</div>
+            <h2>Poshmark Connected!</h2>
+            <p>Your Poshmark account has been successfully connected.</p>
+            <p style="color: #666; font-size: 14px;">Username: {username}</p>
+            <p>You can close this window.</p>
+            <button onclick="window.close()">Close</button>
+        </div>
+        <script>
+            // 자동으로 창 닫기 (일부 브라우저에서는 작동하지 않을 수 있음)
+            setTimeout(function() {{
+                window.close();
+            }}, 3000);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@router.get("/poshmark/status")
+def poshmark_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 계정 연결 상태 확인
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    connected = account is not None and account.username is not None and account.access_token is not None
+    
+    return {
+        "connected": connected,
+        "marketplace": "poshmark",
+        "username": account.username if account else None,
+    }
+
+
+@router.delete("/poshmark/disconnect")
+def poshmark_disconnect(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 계정 연결 해제
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == current_user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+    
+    if account:
+        db.delete(account)
+        db.commit()
+    
+    return {"message": "Poshmark account disconnected"}
+
 @router.delete("/ebay/disconnect")
 def ebay_disconnect(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     account = db.query(MarketplaceAccount).filter(MarketplaceAccount.user_id == current_user.id, MarketplaceAccount.marketplace == "ebay").first()
@@ -1153,8 +1647,73 @@ def get_listing_marketplaces(listing_id: int, db: Session = Depends(get_db), cur
     return [link.marketplace for link in links]
 
 @router.post("/poshmark/{listing_id}/publish")
-def publish_to_poshmark(listing_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return {"message": "Poshmark publish not implemented yet"}
+async def publish_to_poshmark(
+    listing_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark에 리스팅 업로드 (Playwright 자동화)
+    """
+    listing = _get_owned_listing_or_404(listing_id, current_user, db)
+    
+    # 이미지 가져오기
+    listing_images = (
+        db.query(ListingImage)
+        .filter(ListingImage.listing_id == listing_id)
+        .order_by(ListingImage.sort_order.asc())
+        .all()
+    )
+    
+    if not listing_images:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one image is required for Poshmark listing"
+        )
+    
+    # Base URL 구성
+    base_url = str(request.base_url).rstrip('/')
+    
+    try:
+        result = await poshmark_publish_listing(
+            db=db,
+            user=current_user,
+            listing=listing,
+            listing_images=listing_images,
+            base_url=base_url,
+            settings=settings,
+        )
+        
+        # DB에 연결 정보 저장
+        lm = db.query(ListingMarketplace).filter(
+            ListingMarketplace.listing_id == listing.id,
+            ListingMarketplace.marketplace == "poshmark"
+        ).first()
+        
+        if not lm:
+            lm = ListingMarketplace(listing_id=listing.id, marketplace="poshmark")
+            db.add(lm)
+        
+        lm.status = result.get("status", "published")
+        lm.external_item_id = result.get("external_item_id")
+        lm.external_url = result.get("url")
+        
+        db.commit()
+        db.refresh(lm)
+        
+        return {
+            "message": "Published to Poshmark",
+            "url": result.get("url"),
+            "listing_id": result.get("external_item_id"),
+        }
+        
+    except PoshmarkAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except PoshmarkPublishError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Publish failed: {str(e)}")
 
 @router.get("/ebay/me")
 async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -1163,3 +1722,24 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
     except EbayAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return resp.json()
+
+# --------------------------------------
+# Poshmark Inventory
+# --------------------------------------
+@router.get("/poshmark/inventory")
+async def poshmark_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Poshmark 인벤토리 조회 (Playwright로 closet 페이지 스크래핑)
+    """
+    from app.services.poshmark_client import get_poshmark_inventory
+    
+    try:
+        items = await get_poshmark_inventory(db, current_user)
+        return {"items": items, "total": len(items)}
+    except PoshmarkAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Poshmark inventory: {str(e)}")
