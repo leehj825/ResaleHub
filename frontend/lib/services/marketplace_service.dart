@@ -11,6 +11,7 @@ class MarketplaceService {
   static final MarketplaceService _instance = MarketplaceService._internal();
   factory MarketplaceService() => _instance;
 
+  /// eBay 연결 여부 확인
   Future<bool> isEbayConnected() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
@@ -32,6 +33,7 @@ class MarketplaceService {
     return data['connected'] == true;
   }
 
+  /// eBay OAuth 로그인 URL 가져오기
   Future<String> getEbayConnectUrl() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
@@ -53,6 +55,7 @@ class MarketplaceService {
     return data['auth_url'] as String;
   }
 
+  /// eBay 연결 해제
   Future<void> disconnectEbay() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
@@ -72,5 +75,38 @@ class MarketplaceService {
     }
   }
 
+  /// 🔍 eBay Sandbox Inventory 전체 조회 (디버그용)
+  ///
+  /// 백엔드의 GET /marketplaces/ebay/inventory 를 호출해서
+  /// eBay Sell Inventory API 결과(JSON)를 그대로 반환한다.
+  ///
+  /// 반환 예:
+  /// {
+  ///   "inventoryItems": [ ... ],
+  ///   "total": 1,
+  ///   "href": "...",
+  ///   ...
+  /// }
+  Future<Map<String, dynamic>> getEbayInventory() async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
 
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/inventory');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load eBay inventory: ${res.body}');
+    }
+
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
 }

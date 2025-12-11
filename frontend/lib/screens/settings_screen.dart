@@ -1,10 +1,13 @@
 // pubspec.yaml에 추가했는지 확인
 // url_launcher: ^6.3.0
+// http: ^1.2.0 (버전에 따라 다를 수 있음)
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
 
 import '../services/marketplace_service.dart';
+import '../services/auth_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -15,6 +18,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _marketplaceService = MarketplaceService();
+  final _auth = AuthService();
 
   bool _loadingStatus = true;
   bool _ebayConnected = false;
@@ -24,6 +28,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _loadStatus();
+  }
+
+  /// 🔍 eBay Sandbox Inventory 조회 (디버그용)
+  Future<void> _checkEbayInventory() async {
+    try {
+      final data = await _marketplaceService.getEbayInventory();
+      // 콘솔에 전체 JSON 출력
+      // (필요하면 여기서 다이얼로그나 새로운 화면으로 보여줘도 됨)
+      // ignore: avoid_print
+      print('eBay inventory: $data');
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Fetched eBay inventory. Check console log.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load eBay inventory: $e')),
+      );
+    }
   }
 
   Future<void> _loadStatus() async {
@@ -55,8 +82,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final url = await _marketplaceService.getEbayConnectUrl();
       final uri = Uri.parse(url);
       await launchUrl(uri, mode: LaunchMode.externalApplication);
-      // 사용자가 브라우저에서 인증을 마친 뒤,
-      // 다시 앱으로 돌아오면 "다시 상태 새로고침" 버튼을 눌러서 확인하게 할 수도 있음.
+      // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -84,6 +110,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _testEbayApi() async {
+    try {
+      final baseUrl = _auth.baseUrl;
+      final token = await _auth.getToken();
+      if (token == null) throw Exception('Not logged in');
+
+      final url = Uri.parse('$baseUrl/marketplaces/ebay/me');
+      final res = await http.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('eBay API result'),
+          content: SingleChildScrollView(
+            child: Text(res.body),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Test failed: $e')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,7 +165,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Row(
                 children: [
                   Icon(
-                    _ebayConnected ? Icons.check_circle : Icons.cancel_outlined,
+                    _ebayConnected
+                        ? Icons.check_circle
+                        : Icons.cancel_outlined,
                     color: _ebayConnected ? Colors.green : Colors.grey,
                   ),
                   const SizedBox(width: 8),
@@ -119,12 +177,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const Spacer(),
 
+                  // 연결 안 됐을 때: Connect만
                   if (!_ebayConnected)
                     TextButton(
                       onPressed: _connectEbay,
                       child: const Text('Connect'),
                     ),
 
+                  // 연결 됐을 때: Disconnect + Re-connect
                   if (_ebayConnected) ...[
                     TextButton(
                       onPressed: _disconnectEbay,
@@ -137,11 +197,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ],
               ),
-
             const SizedBox(height: 16),
             TextButton(
               onPressed: _loadStatus,
               child: const Text('Refresh status'),
+            ),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: _testEbayApi,
+              child: const Text('Test eBay API'),
+            ),
+            const SizedBox(height: 16),
+            // 🔍 eBay 인벤토리 조회 버튼
+            TextButton(
+              onPressed: _checkEbayInventory,
+              child: const Text('Check eBay Inventory'),
             ),
           ],
         ),
