@@ -6,8 +6,9 @@ import 'package:http/http.dart' as http;
 
 import '../services/marketplace_service.dart';
 import '../services/auth_service.dart';
-import 'ebay_inventory_screen.dart'; // [추가] 인벤토리 화면 임포트
-import 'poshmark_inventory_screen.dart'; // [추가] Poshmark 인벤토리 화면 임포트
+import 'ebay_inventory_screen.dart';
+import 'poshmark_inventory_screen.dart';
+import 'poshmark_webview_screen.dart'; // [NEW] 새로 만든 WebView 화면 임포트
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -31,7 +32,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadStatus();
   }
 
-  /// [수정됨] eBay 인벤토리 화면으로 이동
+  /// eBay 인벤토리 화면으로 이동
   void _openEbayInventory() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -55,8 +56,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _error = null;
     });
     try {
+      // 1. eBay 상태 확인
       final ebayConnected = await _marketplaceService.isEbayConnected();
-      final poshmarkConnected = await _marketplaceService.isPoshmarkConnected();
+      
+      // 2. Poshmark 상태 확인 (에러 발생 시 사용자에게 알림)
+      bool poshmarkConnected = false;
+      try {
+        poshmarkConnected = await _marketplaceService.isPoshmarkConnected();
+      } catch (e) {
+        debugPrint('Error checking Poshmark status: $e');
+        // Poshmark 상태 확인 실패는 전체 로딩을 멈추지 않고 스낵바로 알림
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Could not verify Poshmark status: $e'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _ebayConnected = ebayConnected;
@@ -82,7 +102,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-        // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
       } else {
         throw Exception('Could not launch $url');
       }
@@ -104,7 +123,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SnackBar(content: Text('Disconnected from eBay')),
       );
 
-      await _loadStatus(); // 상태 다시 불러오기
+      await _loadStatus(); 
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -113,22 +132,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // [UPDATED] Poshmark 연결
   Future<void> _connectPoshmark() async {
-    try {
-      final url = await _marketplaceService.getPoshmarkConnectUrl();
-      final uri = Uri.parse(url);
-      
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        // 브라우저에서 인증 후, 앱으로 돌아와서 "Refresh status"로 확인
-      } else {
-        throw Exception('Could not launch $url');
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to open Poshmark connect: $e')),
-      );
+    // 앱 내 WebView 화면으로 이동
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const PoshmarkWebViewScreen()),
+    );
+
+    // [FIX] 결과(result)와 상관없이 무조건 상태를 새로고침합니다.
+    // 사용자가 수동으로 뒤로가기를 눌렀어도, 로그인이 되어있을 수 있기 때문입니다.
+    if (mounted) {
+      print(">>> Returned from login screen, refreshing status...");
+      await _loadStatus();
     }
   }
 
@@ -142,7 +157,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SnackBar(content: Text('Disconnected from Poshmark')),
       );
 
-      await _loadStatus(); // 상태 다시 불러오기
+      await _loadStatus();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -227,7 +242,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             
             const SizedBox(height: 16),
             
-            // 연결 상태에 따른 버튼들
             Row(
               children: [
                 if (!_ebayConnected)
@@ -256,11 +270,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             if (_loadingStatus)
               const Center(child: CircularProgressIndicator())
-            else if (_error != null)
-              Text(
-                'Error: $_error',
-                style: const TextStyle(color: Colors.red),
-              )
             else
               Row(
                 children: [
@@ -280,7 +289,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             
             const SizedBox(height: 16),
             
-            // Poshmark 연결 상태에 따른 버튼들
             Row(
               children: [
                 if (!_poshmarkConnected)
@@ -328,7 +336,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   label: const Text('Test API (Log)'),
                   onPressed: _testEbayApi,
                 ),
-                // [수정됨] 인벤토리 화면으로 이동하는 버튼
                 ActionChip(
                   avatar: const Icon(Icons.inventory_2_outlined),
                   label: const Text('eBay Sandbox Inventory'),
