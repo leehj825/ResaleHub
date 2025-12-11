@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 backend/.env
 backend/resalehub.db
+.env
