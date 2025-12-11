@@ -91,13 +91,17 @@ async def verify_poshmark_credentials(username: str, password: str, headless: bo
                 headless=headless,
                 args=get_browser_launch_args()
             )
+            
+            # [FIX] User Agent를 Windows 10 Chrome으로 변경 (가장 일반적이고 안전함)
+            # Render(Linux)에서 Mac User Agent를 쓰면 OS 불일치로 차단될 확률이 높음
             context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
             )
+            
             page = await context.new_page()
             
-            # 자격 증명 검증 시에는 리소스 차단 적용 (속도 향상)
+            # 리소스 차단 (속도)
             await page.route("**/*", block_resources)
             
             try:
@@ -113,93 +117,79 @@ async def verify_poshmark_credentials(username: str, password: str, headless: bo
 
 async def login_to_poshmark_quick(page: Page, username: str, password: str) -> bool:
     """
-    Verification Login: Handles CAPTCHA checks and 'Homepage Redirects'
+    Verification Login with Debugging
     """
     try:
-        print(f">>> Navigating to Poshmark login page (quick verification)...")
-        # Resource blocking for speed
-        await page.route("**/*", block_resources)
+        print(f">>> Navigating to Poshmark login page...")
         
-        # 1. Go to Login URL
-        await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=15000)
+        # Go to Login URL
+        await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=20000)
+        await asyncio.sleep(2) # Wait for redirects/challenges
         
-        # [Check 1] Are we blocked? (CAPTCHA)
-        if await page.query_selector("text=Pardon the interruption"):
-            print(">>> Blocked by Poshmark 'Pardon the interruption' screen.")
-            await page.screenshot(path="/tmp/quick_login_blocked.png")
-            raise PoshmarkAuthError("Bot detected: 'Pardon the interruption' screen active.")
+        # [DEBUG] Print the Page Title to know where we are
+        page_title = await page.title()
+        print(f">>> Current Page Title: '{page_title}'")
+        
+        # [Check 1] Cloudflare / Security Check
+        if "Just a moment" in page_title or "Security" in page_title or "Challenge" in page_title:
+             print(">>> Blocked by Cloudflare Security Challenge.")
+             await page.screenshot(path="/tmp/blocked_cloudflare.png")
+             raise PoshmarkAuthError("Bot blocked by Cloudflare (Just a moment...)")
 
-        # [Check 2] Find Email Field OR "Log In" Button
+        # [Check 2] "Pardon the interruption"
+        if await page.query_selector("text=Pardon the interruption"):
+            print(">>> Blocked by 'Pardon the interruption'.")
+            raise PoshmarkAuthError("Bot detected: 'Pardon the interruption'")
+
+        # [Check 3] Find Email Field
         email_selectors = [
             'input[name="login_form[username_email]"]',
-            'input[name*="email" i]',
+            'input[name*="email" i]', 
             'input[name*="username" i]',
         ]
         
         email_field = None
-        
-        # Try finding email field first
         for selector in email_selectors:
             try:
                 email_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
                 if email_field: break
-            except PlaywrightTimeoutError:
-                continue
+            except: continue
 
-        # [CRITICAL FIX] If email field is missing, maybe we are on the homepage?
+        # [Check 4] If missing, try clicking "Log in" (Homepage Redirect Case)
         if not email_field:
-            print(">>> Email field not found. Checking for 'Log In' button (Redirected to Home?)...")
-            
-            # Look for the header 'Log in' link/button
-            login_btn_selectors = [
-                'a[href="/login"]',
-                'header a:has-text("Log in")',
-                'button:has-text("Log in")',
-                '.login'
-            ]
-            
-            login_link = None
-            for btn_sel in login_btn_selectors:
-                try:
-                    login_link = await page.wait_for_selector(btn_sel, timeout=2000, state="visible")
-                    if login_link: 
-                        print(f">>> Found 'Log In' button: {btn_sel}")
-                        break
-                except: continue
-            
-            if login_link:
-                # Click it and wait for the form to pop up
-                await login_link.click()
-                print(">>> Clicked 'Log In' button. Waiting for form...")
-                await asyncio.sleep(2) # Wait for animation
-                
-                # Try finding email field AGAIN
-                for selector in email_selectors:
-                    try:
-                        email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                        if email_field: break
-                    except: continue
+            print(">>> Email field missing. Checking for 'Log In' button...")
+            try:
+                # Look for header login button
+                login_btn = await page.wait_for_selector(
+                    'header a[href="/login"], a:has-text("Log in"), button:has-text("Log in")', 
+                    timeout=3000
+                )
+                if login_btn:
+                    print(">>> Found Log In button, clicking...")
+                    await login_btn.click()
+                    await asyncio.sleep(2)
+                    
+                    # Try finding email again
+                    email_field = await page.wait_for_selector('input[name*="username_email"]', timeout=5000)
+            except:
+                pass
 
-        # Final check
         if not email_field:
+            # [DEBUG] Log the HTML snippet to see what text is actually on the page
+            content_snippet = await page.content()
+            print(f">>> Page HTML Snippet (First 500 chars): {content_snippet[:500]}")
+            
             await page.screenshot(path="/tmp/quick_login_fail.png")
-            raise PoshmarkAuthError("Could not find login form (even after clicking Log In). See /tmp/quick_login_fail.png")
+            raise PoshmarkAuthError(f"Login form not found. Title: '{page_title}'. See /tmp/quick_login_fail.png")
         
-        # 2. Fill Form
+        # Proceed with Login
         await email_field.fill(username)
+        await page.fill('input[type="password"]', password)
+        await page.click('button[type="submit"]')
         
-        password_field = await page.wait_for_selector('input[type="password"]', state="visible")
-        await password_field.fill(password)
-        
-        login_button = await page.wait_for_selector('button[type="submit"]', state="visible")
-        await login_button.click()
-        
-        # 3. Verify Success
+        # Wait for result
         try:
-            await page.wait_for_function(
-                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error') !== null",
-                timeout=10000
-            )
+            await page.wait_for_url(lambda u: "/login" not in u.lower(), timeout=10000)
         except: pass
         
         if "/login" not in page.url.lower():
@@ -209,8 +199,6 @@ async def login_to_poshmark_quick(page: Page, username: str, password: str) -> b
         
     except Exception as e:
         print(f">>> Quick login failed: {e}")
-        try: await page.screenshot(path="/tmp/quick_login_exception.png")
-        except: pass
         raise PoshmarkAuthError(f"Login verification failed: {str(e)}")
 
 
