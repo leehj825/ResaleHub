@@ -113,12 +113,23 @@ async def verify_poshmark_credentials(username: str, password: str, headless: bo
 
 async def login_to_poshmark_quick(page: Page, username: str, password: str) -> bool:
     """
-    빠른 Poshmark 로그인 검증 (연결 시 사용)
+    Verification Login: Handles CAPTCHA checks and 'Homepage Redirects'
     """
     try:
         print(f">>> Navigating to Poshmark login page (quick verification)...")
+        # Resource blocking for speed
+        await page.route("**/*", block_resources)
+        
+        # 1. Go to Login URL
         await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=15000)
         
+        # [Check 1] Are we blocked? (CAPTCHA)
+        if await page.query_selector("text=Pardon the interruption"):
+            print(">>> Blocked by Poshmark 'Pardon the interruption' screen.")
+            await page.screenshot(path="/tmp/quick_login_blocked.png")
+            raise PoshmarkAuthError("Bot detected: 'Pardon the interruption' screen active.")
+
+        # [Check 2] Find Email Field OR "Log In" Button
         email_selectors = [
             'input[name="login_form[username_email]"]',
             'input[name*="email" i]',
@@ -126,65 +137,80 @@ async def login_to_poshmark_quick(page: Page, username: str, password: str) -> b
         ]
         
         email_field = None
+        
+        # Try finding email field first
         for selector in email_selectors:
             try:
-                email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if email_field:
-                    break
+                email_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if email_field: break
             except PlaywrightTimeoutError:
                 continue
-        
+
+        # [CRITICAL FIX] If email field is missing, maybe we are on the homepage?
         if not email_field:
-            raise PoshmarkAuthError("Could not find email/username input field")
+            print(">>> Email field not found. Checking for 'Log In' button (Redirected to Home?)...")
+            
+            # Look for the header 'Log in' link/button
+            login_btn_selectors = [
+                'a[href="/login"]',
+                'header a:has-text("Log in")',
+                'button:has-text("Log in")',
+                '.login'
+            ]
+            
+            login_link = None
+            for btn_sel in login_btn_selectors:
+                try:
+                    login_link = await page.wait_for_selector(btn_sel, timeout=2000, state="visible")
+                    if login_link: 
+                        print(f">>> Found 'Log In' button: {btn_sel}")
+                        break
+                except: continue
+            
+            if login_link:
+                # Click it and wait for the form to pop up
+                await login_link.click()
+                print(">>> Clicked 'Log In' button. Waiting for form...")
+                await asyncio.sleep(2) # Wait for animation
+                
+                # Try finding email field AGAIN
+                for selector in email_selectors:
+                    try:
+                        email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                        if email_field: break
+                    except: continue
+
+        # Final check
+        if not email_field:
+            await page.screenshot(path="/tmp/quick_login_fail.png")
+            raise PoshmarkAuthError("Could not find login form (even after clicking Log In). See /tmp/quick_login_fail.png")
         
+        # 2. Fill Form
         await email_field.fill(username)
         
-        password_selectors = ['input[type="password"]']
-        password_field = None
-        for selector in password_selectors:
-            try:
-                password_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if password_field:
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        
-        if not password_field:
-            raise PoshmarkAuthError("Could not find password input field")
-        
+        password_field = await page.wait_for_selector('input[type="password"]', state="visible")
         await password_field.fill(password)
         
-        login_button = await page.wait_for_selector('button[type="submit"]', timeout=5000)
-        if not login_button:
-            raise PoshmarkAuthError("Could not find login button")
-        
+        login_button = await page.wait_for_selector('button[type="submit"]', state="visible")
         await login_button.click()
         
-        # 로그인 결과 대기
+        # 3. Verify Success
         try:
             await page.wait_for_function(
-                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error, [class*=\"error\" i]') !== null",
+                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error') !== null",
                 timeout=10000
             )
-        except:
-            pass
+        except: pass
         
-        current_url = page.url
-        
-        # 에러 체크
-        error_element = await page.query_selector('.error, [class*="error" i]')
-        if error_element:
-            error_text = await error_element.inner_text()
-            if error_text.strip():
-                raise PoshmarkAuthError(f"Login failed: {error_text}")
-        
-        if "/login" not in current_url.lower():
+        if "/login" not in page.url.lower():
             return True
             
         return False
         
     except Exception as e:
         print(f">>> Quick login failed: {e}")
+        try: await page.screenshot(path="/tmp/quick_login_exception.png")
+        except: pass
         raise PoshmarkAuthError(f"Login verification failed: {str(e)}")
 
 
