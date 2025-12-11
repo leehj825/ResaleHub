@@ -1,13 +1,14 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload 
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.config import Settings
 from app.models.user import User
 from app.models.listing import Listing
+from app.models.listing_marketplace import ListingMarketplace # [Added] Needed for saving connection info
 from app.schemas.listing import ListingCreate, ListingRead, ListingUpdate
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -17,12 +18,13 @@ settings = Settings()
 
 def _attach_thumbnail(listing: Listing) -> ListingRead:
     """
-    SQLAlchemy Listing 객체를 ListingRead로 변환하면서
-    대표 이미지(thumbnail_url)를 붙여주는 헬퍼 함수.
+    Helper function to attach a thumbnail URL when converting 
+    a SQLAlchemy Listing object to ListingRead.
     """
+    # When model_validate is called, pre-loaded marketplace_links are also converted.
     data = ListingRead.model_validate(listing)
 
-    # Listing.images 관계에 이미지가 있으면 첫 번째 것을 썸네일로 사용
+    # Use the first image in the Listing.images relationship as the thumbnail
     if getattr(listing, "images", None):
         if listing.images:
             first_img = listing.images[0]
@@ -39,11 +41,14 @@ def list_listings(
     listings = (
         db.query(Listing)
         .filter(Listing.owner_id == current_user.id)
+        # [Important] Eager load images and marketplace links together
+        .options(selectinload(Listing.images))
+        .options(selectinload(Listing.marketplace_links))
         .order_by(Listing.created_at.desc())
         .all()
     )
 
-    # 썸네일까지 포함된 ListingRead 리스트로 변환
+    # Convert to list of ListingRead with thumbnails attached
     return [_attach_thumbnail(l) for l in listings]
 
 
@@ -53,16 +58,47 @@ def create_listing(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # 1. Separate fields not in the DB model (used for import logic)
+    listing_data = listing_in.model_dump(exclude={
+        "import_from_marketplace", 
+        "import_external_id", 
+        "import_url"
+    })
+    
+    # 2. Create Listing (includes sku, condition)
     listing = Listing(
-        owner_id=current_user.id,
-        title=listing_in.title,
-        description=listing_in.description,
-        price=listing_in.price,
-        currency=listing_in.currency,
+        **listing_data,
+        owner_id=current_user.id
     )
     db.add(listing)
     db.commit()
     db.refresh(listing)
+
+    # 3. [Import Logic] Automatically create connection info if imported from eBay
+    if listing_in.import_from_marketplace:
+        marketplace = listing_in.import_from_marketplace
+        
+        # Check for duplicates just in case
+        existing_link = db.query(ListingMarketplace).filter(
+            ListingMarketplace.listing_id == listing.id,
+            ListingMarketplace.marketplace == marketplace
+        ).first()
+
+        if not existing_link:
+            new_link = ListingMarketplace(
+                listing_id=listing.id,
+                marketplace=marketplace,
+                status="published", # Imported items are already published
+                external_item_id=listing_in.import_external_id,
+                external_url=listing_in.import_url,
+                sku=listing.sku,    # Use the SKU saved in the Listing
+                offer_id=None       # Offer ID is unknown during inventory import, so leave blank
+            )
+            db.add(new_link)
+            db.commit()
+            
+            # Reload listing to include the new connection info
+            db.refresh(listing)
 
     return _attach_thumbnail(listing)
 
@@ -74,6 +110,9 @@ def _get_owned_listing_or_404(
 ) -> Listing:
     listing = (
         db.query(Listing)
+        # [Important] Must eager load connection info even for single item retrieval
+        .options(selectinload(Listing.images))
+        .options(selectinload(Listing.marketplace_links))
         .filter(
             Listing.id == listing_id,
             Listing.owner_id == current_user.id,
@@ -106,7 +145,10 @@ def update_listing(
     current_user: User = Depends(get_current_user),
 ):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
+    
+    # exclude_unset=True: Do not touch fields that were not sent
     data = listing_in.model_dump(exclude_unset=True)
+    
     for field, value in data.items():
         setattr(listing, field, value)
 

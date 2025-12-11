@@ -17,6 +17,18 @@ class _NewListingScreenState extends State<NewListingScreen> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _priceController = TextEditingController();
+  final _skuController = TextEditingController(); // [추가] SKU 입력용
+
+  // [추가] 상태(Condition) 선택용 기본값
+  String _selectedCondition = 'Used'; 
+  
+  // eBay Condition과 매핑될 옵션들
+  final List<String> _conditionOptions = [
+    'New',
+    'Like New',
+    'Used',
+    'For Parts'
+  ];
 
   bool _saving = false;
   String? _error;
@@ -32,6 +44,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
     });
 
     try {
+      // 파일 선택기 실행 (다중 선택 가능)
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: true,
         type: FileType.image,
@@ -44,20 +57,14 @@ class _NewListingScreenState extends State<NewListingScreen> {
               .map((f) => File(f.path!))
               .toList();
         });
-      } else {
-        // 선택 취소
-        debugPrint('User canceled picking files');
       }
-    } catch (e, st) {
-      debugPrint('File picker error: $e');
-      debugPrint(st.toString());
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to open file picker: $e';
+        _error = 'Failed to pick images: $e';
       });
     }
   }
-
 
   Future<void> _save() async {
     setState(() {
@@ -68,13 +75,16 @@ class _NewListingScreenState extends State<NewListingScreen> {
     try {
       final price = double.tryParse(_priceController.text.trim()) ?? 0.0;
 
-      // 1) 우선 Listing JSON으로 생성
+      // 1) Listing 생성 요청 (SKU, Condition 포함)
       final listing = await _listingService.createListing(
         title: _titleController.text.trim(),
         description: _descriptionController.text.trim().isEmpty
             ? null
             : _descriptionController.text.trim(),
         price: price,
+        // 입력된 SKU가 없으면 null을 보내 백엔드에서 자동 생성하게 함
+        sku: _skuController.text.trim().isEmpty ? null : _skuController.text.trim(),
+        condition: _selectedCondition,
       );
 
       // 2) 이미지가 선택되어 있다면 업로드
@@ -83,7 +93,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
       }
 
       if (!mounted) return;
-      // ListingsScreen으로 listing을 넘겨서 reload 트리거
+      // 목록 화면으로 돌아가면서 생성된 객체 전달 (목록 새로고침용)
       Navigator.of(context).pop<Listing>(listing);
     } catch (e) {
       if (!mounted) return;
@@ -103,6 +113,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     _priceController.dispose();
+    _skuController.dispose();
     super.dispose();
   }
 
@@ -114,35 +125,84 @@ class _NewListingScreenState extends State<NewListingScreen> {
       appBar: AppBar(
         title: const Text('New Listing'),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Title
             TextField(
               controller: _titleController,
-              decoration: const InputDecoration(labelText: 'Title'),
+              decoration: const InputDecoration(
+                labelText: 'Title',
+                hintText: 'e.g., Samsung Galaxy S25',
+              ),
             ),
             const SizedBox(height: 12),
+            
+            // Description
             TextField(
               controller: _descriptionController,
               maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Description'),
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                hintText: 'Describe the item condition, features, etc.',
+              ),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _priceController,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Price (USD)'),
-            ),
-            const SizedBox(height: 16),
-
-            // 이미지 선택 버튼 + 개수 표시
+            
+            // Price & SKU Row
             Row(
               children: [
-                ElevatedButton(
+                Expanded(
+                  child: TextField(
+                    controller: _priceController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Price (USD)'),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: TextField(
+                    controller: _skuController,
+                    decoration: const InputDecoration(
+                      labelText: 'SKU (Optional)',
+                      hintText: 'Auto-generated if empty',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Condition Dropdown
+            DropdownButtonFormField<String>(
+              value: _selectedCondition,
+              decoration: const InputDecoration(labelText: 'Condition'),
+              items: _conditionOptions.map((String condition) {
+                return DropdownMenuItem<String>(
+                  value: condition,
+                  child: Text(condition),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                if (newValue != null) {
+                  setState(() {
+                    _selectedCondition = newValue;
+                  });
+                }
+              },
+            ),
+
+            const SizedBox(height: 24),
+
+            // Image Picker
+            Row(
+              children: [
+                ElevatedButton.icon(
                   onPressed: _saving ? null : _pickImages,
-                  child: const Text('Select Photos'),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Select Photos'),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -157,23 +217,57 @@ class _NewListingScreenState extends State<NewListingScreen> {
               ],
             ),
 
-            const SizedBox(height: 16),
+            // Image Preview (Horizontal Scroll)
+            if (_selectedImages.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 80,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _selectedImages.length,
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8.0),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.file(
+                          _selectedImages[index],
+                          width: 80,
+                          height: 80,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
 
+            const SizedBox(height: 24),
+
+            // Error Message
             if (_error != null)
-              Text(
-                _error!,
-                style: theme.textTheme.bodyMedium?.copyWith(color: Colors.red),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  _error!,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: Colors.red),
+                ),
               ),
 
-            const SizedBox(height: 8),
-
+            // Save Button
             _saving
-                ? const CircularProgressIndicator()
+                ? const Center(child: CircularProgressIndicator())
                 : SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: _save,
-                      child: const Text('Save'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        backgroundColor: theme.primaryColor,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Save Listing', style: TextStyle(fontSize: 16)),
                     ),
                   ),
           ],

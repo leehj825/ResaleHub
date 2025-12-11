@@ -13,9 +13,6 @@ class ListingService {
 
   final _authService = AuthService();
 
-  // ---------------------------
-  // 내 Listings 가져오기
-  // ---------------------------
   Future<List<Listing>> getMyListings() async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -41,14 +38,18 @@ class ListingService {
         .toList();
   }
 
-  // ---------------------------
-  // Listing 생성
-  // ---------------------------
+  // [수정됨] thumbnailUrl 파라미터 추가
   Future<Listing> createListing({
     required String title,
     String? description,
     required double price,
     String currency = 'USD',
+    String? sku,
+    String? condition,
+    String? importFrom,
+    String? importExternalId,
+    String? importUrl,
+    String? thumbnailUrl, // 추가
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -57,18 +58,27 @@ class ListingService {
     }
 
     final url = Uri.parse('$baseUrl/listings/');
+    
+    final body = {
+      'title': title,
+      'description': description,
+      'price': price,
+      'currency': currency,
+      'sku': sku,
+      'condition': condition,
+      'import_from_marketplace': importFrom,
+      'import_external_id': importExternalId,
+      'import_url': importUrl,
+      'thumbnail_url': thumbnailUrl, // 백엔드로 전송
+    };
+
     final res = await http.post(
       url,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: jsonEncode({
-        'title': title,
-        'description': description,
-        'price': price,
-        'currency': currency,
-      }),
+      body: jsonEncode(body),
     );
 
     if (res.statusCode != 201) {
@@ -79,9 +89,8 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  // ---------------------------
-  // Listing 수정
-  // ---------------------------
+  // ... (나머지 updateListing, deleteListing, uploadImages, getListingImages 등은 기존과 동일) ...
+  // [파일 길이상 생략된 부분은 기존 코드를 그대로 유지하세요]
   Future<Listing> updateListing(
     int listingId, {
     String? title,
@@ -89,6 +98,8 @@ class ListingService {
     double? price,
     String? currency,
     String? status,
+    String? sku,
+    String? condition,
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -104,6 +115,8 @@ class ListingService {
     if (price != null) body['price'] = price;
     if (currency != null) body['currency'] = currency;
     if (status != null) body['status'] = status;
+    if (sku != null) body['sku'] = sku;
+    if (condition != null) body['condition'] = condition;
 
     final res = await http.put(
       url,
@@ -122,9 +135,6 @@ class ListingService {
     return Listing.fromJson(data);
   }
 
-  // ---------------------------
-  // Listing 삭제
-  // ---------------------------
   Future<void> deleteListing(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -146,9 +156,6 @@ class ListingService {
     }
   }
 
-  // ---------------------------
-  // 이미지 업로드
-  // ---------------------------
   Future<void> uploadImages(int listingId, List<File> files) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -165,7 +172,7 @@ class ListingService {
       final fileName = file.path.split('/').last;
       request.files.add(
         await http.MultipartFile.fromPath(
-          'files', // FastAPI에서 files: List[UploadFile] = File(...)
+          'files',
           file.path,
           filename: fileName,
         ),
@@ -180,11 +187,6 @@ class ListingService {
     }
   }
 
-  // ---------------------------
-  // 이미지 목록 가져오기
-  //   GET /listings/{id}/images
-  //   → ["\/media/listings/6/000.jpg", ...]
-  // ---------------------------
   Future<List<String>> getListingImages(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -208,11 +210,6 @@ class ListingService {
     return data.map((e) => e as String).toList();
   }
 
-  // ---------------------------
-  // 개별 이미지 삭제
-  //   imageUrl 예: "/media/listings/6/000.jpg"
-  //   백엔드는 DELETE /listings/{id}/images/{filename}
-  // ---------------------------
   Future<void> deleteListingImage(int listingId, String imageUrl) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -220,7 +217,6 @@ class ListingService {
       throw Exception('Not logged in');
     }
 
-    // "/media/listings/6/000.jpg" → "000.jpg"
     final parts = imageUrl.split('/');
     final filename = parts.isNotEmpty ? parts.last : imageUrl;
 
@@ -237,7 +233,7 @@ class ListingService {
     }
   }
 
-    Future<void> publishToEbay(int listingId) async {
+  Future<void> publishToEbay(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -254,6 +250,26 @@ class ListingService {
 
     if (res.statusCode != 200) {
       throw Exception('Failed to publish to eBay: ${res.body}');
+    }
+  }
+
+  Future<void> prepareEbayOffer(int listingId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/ebay/$listingId/prepare-offer');
+    final res = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to prepare eBay offer: ${res.body}');
     }
   }
 
@@ -277,7 +293,7 @@ class ListingService {
     }
   }
 
-    Future<List<String>> getListingMarketplaces(int listingId) async {
+  Future<List<String>> getListingMarketplaces(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -300,4 +316,27 @@ class ListingService {
     return data.map((e) => e.toString()).toList();
   }
 
+  Future<Listing> getListing(int id) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/listings/$id');
+    
+    final response = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return Listing.fromJson(data);
+    } else {
+      throw Exception('Failed to load listing: ${response.body}');
+    }
+  }
 }
