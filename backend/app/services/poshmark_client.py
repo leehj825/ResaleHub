@@ -18,7 +18,7 @@ from app.models.marketplace_account import MarketplaceAccount
 from app.models.user import User
 from app.models.listing import Listing
 from app.models.listing_image import ListingImage
-
+import json
 
 class PoshmarkAuthError(Exception):
     """Poshmark 인증 관련 에러"""
@@ -558,3 +558,38 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 await browser.close()
     except Exception as e:
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
+    
+
+# Updated function to use cookies
+async def verify_poshmark_credentials(username: str, cookie_json: str, headless: bool = True) -> bool:
+    """
+    Verify credentials using SAVED COOKIES (No password typing).
+    """
+    try:
+        cookies = json.loads(cookie_json) # Parse the JSON string from DB
+    except:
+        print(">>> Error: Stored credentials are not valid JSON cookies.")
+        return False
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless, args=get_browser_launch_args())
+        
+        # Create context and LOAD COOKIES immediately
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...", # Match your real UA
+        )
+        await context.add_cookies(cookies) # <--- MAGIC HAPPENS HERE
+        
+        page = await context.new_page()
+        
+        # Now just go to the feed. If cookies work, we are logged in!
+        print(">>> Navigating to Feed with cookies...")
+        await page.goto("https://poshmark.com/feed", timeout=20000)
+        
+        # Check if we are logged in
+        if "login" not in page.url and await page.query_selector('.header-user-profile, a[href*="/user/"]'):
+             print(">>> Cookie Login Successful!")
+             return True
+        else:
+             print(">>> Cookie Login Failed (Expired?)")
+             return False

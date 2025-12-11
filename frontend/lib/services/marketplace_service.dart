@@ -2,7 +2,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-import 'package:frontend/models/ebay_item.dart'; // [필수] Step 1에서 만든 모델 임포트
+import 'package:frontend/models/ebay_item.dart';
 import 'package:frontend/models/poshmark_item.dart';
 import 'auth_service.dart';
 
@@ -78,9 +78,6 @@ class MarketplaceService {
   }
 
   /// 🔍 eBay Sandbox Inventory 전체 조회
-  ///
-  /// 백엔드의 GET /marketplaces/ebay/inventory 를 호출해서
-  /// eBayItem 모델 리스트로 변환하여 반환한다.
   Future<List<EbayItem>> getEbayInventory() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
@@ -103,10 +100,8 @@ class MarketplaceService {
 
     final data = jsonDecode(res.body);
     
-    // eBay 응답 구조: { "inventoryItems": [ ... ], "total": ... }
     final List<dynamic> itemsJson = data['inventoryItems'] ?? [];
 
-    // JSON 리스트를 EbayItem 객체 리스트로 변환
     return itemsJson.map((json) => EbayItem.fromJson(json)).toList();
   }
 
@@ -184,10 +179,8 @@ class MarketplaceService {
 
     final data = jsonDecode(res.body);
     
-    // Poshmark 응답 구조: { "items": [ ... ], "total": ... }
     final List<dynamic> itemsJson = data['items'] ?? [];
 
-    // JSON 리스트를 PoshmarkItem 객체 리스트로 변환
     return itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
   }
 
@@ -237,6 +230,29 @@ class MarketplaceService {
 
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     return data['connect_url'] as String;
+  }
+
+  /// [NEW] Poshmark 쿠키 기반 연결 (WebView에서 추출한 쿠키 전송)
+  /// 이 함수가 추가되었습니다.
+  Future<void> connectPoshmarkViaCookies(List<Map<String, dynamic>> cookies) async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) throw Exception('Not logged in');
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/connect/cookies');
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(cookies),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to connect Poshmark via cookies: ${response.body}');
+    }
   }
 
   /// Poshmark 연결 해제

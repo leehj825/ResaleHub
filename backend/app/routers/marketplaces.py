@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict, Any
 from urllib.parse import urlencode, quote
 import base64
 import re
@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -1458,8 +1458,7 @@ async def poshmark_connect_callback(
     db: Session = Depends(get_db),
 ):
     """
-    Poshmark 연결 콜백 (폼 제출 처리)
-    eBay OAuth 콜백과 유사한 구조
+    Poshmark 연결 콜백 (폼 제출 처리 - 기존 방식)
     """
     
     if not state or not username or not password:
@@ -1479,11 +1478,11 @@ async def poshmark_connect_callback(
     from app.services.poshmark_client import verify_poshmark_credentials
     
     # Render.com에서는 headless=True, 로컬에서는 headless=False로 설정 가능
-    # 환경 변수로 제어 가능하도록 설정
     import os
     headless_mode = os.getenv("POSHMARK_HEADLESS", "true").lower() == "true"
     
     try:
+        # 기존 방식: 패스워드를 두 번째 인자로 전달
         login_success = await verify_poshmark_credentials(username, password, headless=headless_mode)
         if not login_success:
             raise HTTPException(
@@ -1500,15 +1499,11 @@ async def poshmark_connect_callback(
             detail=f"Failed to verify Poshmark credentials: {str(e)}"
         )
     
-    # 기존 계정 확인
-    account = (
-        db.query(MarketplaceAccount)
-        .filter(
-            MarketplaceAccount.user_id == user.id,
-            MarketplaceAccount.marketplace == "poshmark",
-        )
-        .first()
-    )
+    # 기존 계정 확인 및 생성
+    account = db.query(MarketplaceAccount).filter(
+        MarketplaceAccount.user_id == user.id,
+        MarketplaceAccount.marketplace == "poshmark",
+    ).first()
     
     if not account:
         account = MarketplaceAccount(
@@ -1517,70 +1512,84 @@ async def poshmark_connect_callback(
         )
         db.add(account)
     
-    # username과 password 저장 (password는 임시로 access_token 필드에 저장)
-    # TODO: 실제 운영 환경에서는 password를 bcrypt 등으로 암호화
     account.username = username
-    account.access_token = password  # 임시 저장
+    account.access_token = password  # 기존 방식: 비밀번호 저장 (취약)
+    account.is_active = True
     
     db.commit()
     db.refresh(account)
     
-    # 성공 페이지 반환 (eBay 스타일)
     html_content = f"""
     <html>
     <head>
         <title>Poshmark Connected</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                max-width: 500px;
-                margin: 50px auto;
-                padding: 20px;
-                background: #f5f5f5;
-            }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                text-align: center;
-            }}
+            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
             h2 {{ color: #28a745; }}
-            .success-icon {{
-                font-size: 48px;
-                color: #28a745;
-                margin: 20px 0;
-            }}
-            button {{
-                background: #6c757d;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 4px;
-                cursor: pointer;
-                margin-top: 20px;
-            }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="success-icon">✓</div>
-            <h2>Poshmark Connected!</h2>
-            <p>Your Poshmark account has been successfully connected.</p>
-            <p style="color: #666; font-size: 14px;">Username: {username}</p>
-            <p>You can close this window.</p>
-            <button onclick="window.close()">Close</button>
-        </div>
-        <script>
-            // 자동으로 창 닫기 (일부 브라우저에서는 작동하지 않을 수 있음)
-            setTimeout(function() {{
-                window.close();
-            }}, 3000);
-        </script>
+        <h2>Poshmark Connected!</h2>
+        <p>Your Poshmark account has been successfully connected.</p>
+        <script>setTimeout(function() {{ window.close(); }}, 3000);</script>
     </body>
     </html>
     """
     return HTMLResponse(content=html_content)
+
+
+# ---------------------------------------------------------
+# [NEW] Poshmark Cookie-Based Connection (Secure & Anti-Ban)
+# ---------------------------------------------------------
+@router.post("/poshmark/connect/cookies")
+def connect_poshmark_cookies(
+    cookies: List[Dict[str, Any]] = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Connect Poshmark using cookies extracted from client-side WebView.
+    This bypasses IP bans and CAPTCHAs by using a trusted mobile session.
+    """
+    
+    # 1. Try to extract username from cookies (usually 'un' cookie)
+    username = next((c['value'] for c in cookies if c['name'] == 'un'), None)
+    
+    # Fallback if 'un' cookie is missing
+    if not username:
+        username = "Connected Account"
+
+    # 2. Serialize cookies to JSON string to store in DB
+    try:
+        cookies_json = json.dumps(cookies)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid cookie format: {e}")
+
+    # 3. Save to Database
+    account = db.query(MarketplaceAccount).filter(
+        MarketplaceAccount.user_id == current_user.id,
+        MarketplaceAccount.marketplace == "poshmark"
+    ).first()
+
+    if account:
+        account.username = username
+        # CRITICAL: Storing Cookies here instead of password!
+        account.access_token = cookies_json 
+        account.is_active = True
+    else:
+        account = MarketplaceAccount(
+            user_id=current_user.id,
+            marketplace="poshmark",
+            username=username,
+            access_token=cookies_json, # Storing Cookies here
+            is_active=True
+        )
+        db.add(account)
+    
+    db.commit()
+    db.refresh(account)
+    
+    return {"status": "connected", "username": username}
 
 
 @router.get("/poshmark/status")
@@ -1600,7 +1609,7 @@ def poshmark_status(
         .first()
     )
     
-    connected = account is not None and account.username is not None and account.access_token is not None
+    connected = account is not None and account.access_token is not None
     
     return {
         "connected": connected,
