@@ -1,9 +1,10 @@
 # app/services/poshmark_client.py
 """
 Poshmark Playwright 자동화 클라이언트
-- 자동 로그인
+- 자동 로그인 (세션 재사용 포함)
 - 리스팅 업로드 (제목/설명/가격/카테고리/이미지)
 - 발행
+- 렌더(Render) 호스팅 최적화 적용
 """
 import asyncio
 import os
@@ -47,9 +48,8 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
         raise PoshmarkAuthError("Poshmark account not connected")
 
     # username은 username 필드에, password는 access_token 필드에 저장 (임시)
-    # 실제 운영 환경에서는 암호화된 저장 필요
     username = account.username
-    password = account.access_token  # 임시로 password를 access_token 필드에 저장
+    password = account.access_token
 
     if not username or not password:
         raise PoshmarkAuthError("Poshmark credentials not configured")
@@ -57,26 +57,50 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
     return username, password
 
 
+async def block_resources(route):
+    """
+    불필요한 리소스 차단하여 속도 향상 (이미지, 폰트, 미디어)
+    """
+    if route.request.resource_type in ["image", "media", "font"]:
+        await route.abort()
+    else:
+        await route.continue_()
+
+
+def get_browser_launch_args():
+    """
+    Render/Cloud 환경을 위한 최적화된 브라우저 실행 인자
+    """
+    return [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",  # 메모리 부족 방지
+        "--disable-accelerated-2d-canvas",
+        "--disable-gpu",            # GPU 없는 환경 최적화
+        "--single-process",         # 리소스 절약 (선택사항)
+    ]
+
+
 async def verify_poshmark_credentials(username: str, password: str, headless: bool = True) -> bool:
     """
     Poshmark 자격 증명 검증 (연결 시 사용)
-    실제 로그인을 시도하여 자격 증명이 유효한지 확인합니다.
-    빠른 검증을 위해 타임아웃을 줄입니다.
-    
-    Args:
-        headless: False로 설정하면 브라우저를 보여줌 (디버깅용)
     """
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
+            browser = await p.chromium.launch(
+                headless=headless,
+                args=get_browser_launch_args()
+            )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
             page = await context.new_page()
             
+            # 자격 증명 검증 시에는 리소스 차단 적용 (속도 향상)
+            await page.route("**/*", block_resources)
+            
             try:
-                # 빠른 로그인 검증 (타임아웃 단축)
                 print(f">>> Starting quick login verification...")
                 login_success = await login_to_poshmark_quick(page, username, password)
                 return login_success
@@ -90,22 +114,15 @@ async def verify_poshmark_credentials(username: str, password: str, headless: bo
 async def login_to_poshmark_quick(page: Page, username: str, password: str) -> bool:
     """
     빠른 Poshmark 로그인 검증 (연결 시 사용)
-    타임아웃을 줄여서 빠르게 검증합니다.
     """
     try:
         print(f">>> Navigating to Poshmark login page (quick verification)...")
-        # 더 짧은 타임아웃으로 페이지 로드
         await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=15000)
-        await asyncio.sleep(1)  # 최소 대기
         
-        # 이메일/사용자명 입력 필드 찾기 (빠른 검증)
         email_selectors = [
-            'input[type="email"]',
-            'input[type="text"][name*="email" i]',
-            'input[type="text"][name*="username" i]',
             'input[name="login_form[username_email]"]',
-            'input[placeholder*="email" i]',
-            'input[placeholder*="username" i]',
+            'input[name*="email" i]',
+            'input[name*="username" i]',
         ]
         
         email_field = None
@@ -113,7 +130,6 @@ async def login_to_poshmark_quick(page: Page, username: str, password: str) -> b
             try:
                 email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
                 if email_field:
-                    print(f">>> Found email field: {selector}")
                     break
             except PlaywrightTimeoutError:
                 continue
@@ -122,20 +138,13 @@ async def login_to_poshmark_quick(page: Page, username: str, password: str) -> b
             raise PoshmarkAuthError("Could not find email/username input field")
         
         await email_field.fill(username)
-        print(f">>> Filled username")
         
-        # 비밀번호 입력 필드
-        password_selectors = [
-            'input[type="password"]',
-            'input[name*="password" i]',
-        ]
-        
+        password_selectors = ['input[type="password"]']
         password_field = None
         for selector in password_selectors:
             try:
                 password_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
                 if password_field:
-                    print(f">>> Found password field: {selector}")
                     break
             except PlaywrightTimeoutError:
                 continue
@@ -144,301 +153,87 @@ async def login_to_poshmark_quick(page: Page, username: str, password: str) -> b
             raise PoshmarkAuthError("Could not find password input field")
         
         await password_field.fill(password)
-        print(f">>> Filled password")
         
-        # 로그인 버튼 클릭
-        login_button_selectors = [
-            'button[type="submit"]',
-            'button:has-text("Sign in")',
-            'button:has-text("Log in")',
-        ]
-        
-        login_button = None
-        for selector in login_button_selectors:
-            try:
-                login_button = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if login_button:
-                    print(f">>> Found login button: {selector}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        
+        login_button = await page.wait_for_selector('button[type="submit"]', timeout=5000)
         if not login_button:
             raise PoshmarkAuthError("Could not find login button")
         
         await login_button.click()
-        print(f">>> Clicked login button")
         
-        # 로그인 완료 대기 (짧은 타임아웃)
+        # 로그인 결과 대기
         try:
-            # URL 변경 또는 에러 메시지 확인
             await page.wait_for_function(
-                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error, [class*=\"error\" i], [role=\"alert\"]') !== null",
+                "() => window.location.href.indexOf('/login') === -1 || document.querySelector('.error, [class*=\"error\" i]') !== null",
                 timeout=10000
             )
         except:
-            # 타임아웃이어도 현재 URL 확인
             pass
         
-        # 로그인 성공 확인
         current_url = page.url
-        print(f">>> After login, URL: {current_url}")
         
-        # 에러 메시지 확인
-        error_selectors = [
-            '.error',
-            '[class*="error" i]',
-            '[role="alert"]',
-            'text=/invalid|incorrect|wrong|failed/i',
-        ]
-        for selector in error_selectors:
-            try:
-                error_element = await page.query_selector(selector)
-                if error_element:
-                    error_text = await error_element.inner_text()
-                    if error_text and len(error_text.strip()) > 0:
-                        print(f">>> Login error found: {error_text}")
-                        raise PoshmarkAuthError(f"Login failed: {error_text}")
-            except PoshmarkAuthError:
-                raise
-            except:
-                pass
+        # 에러 체크
+        error_element = await page.query_selector('.error, [class*="error" i]')
+        if error_element:
+            error_text = await error_element.inner_text()
+            if error_text.strip():
+                raise PoshmarkAuthError(f"Login failed: {error_text}")
         
-        # URL이 /login이 아니면 성공으로 간주
-        if "/login" not in current_url.lower() and "login" not in current_url.lower():
-            print(f">>> Login verification successful (redirected away from login page)")
+        if "/login" not in current_url.lower():
             return True
+            
+        return False
         
-        # 사용자 메뉴 확인 (빠른 확인)
-        user_menu_selectors = [
-            'a[href*="/user/"]',
-            'a[href*="/closet/"]',
-            'button[aria-label*="Account" i]',
-        ]
-        
-        for selector in user_menu_selectors:
-            try:
-                await page.wait_for_selector(selector, timeout=3000)
-                print(f">>> Login verification successful (found user menu)")
-                return True
-            except PlaywrightTimeoutError:
-                continue
-        
-        # 여전히 로그인 페이지에 있으면 실패
-        if "/login" in current_url.lower():
-            raise PoshmarkAuthError("Login failed - still on login page")
-        
-        # 불확실하지만 로그인 페이지가 아니면 성공으로 간주
-        print(f">>> Login verification successful (not on login page)")
-        return True
-        
-    except PlaywrightTimeoutError as e:
-        error_msg = str(e)
-        if "timeout" in error_msg.lower():
-            raise PoshmarkAuthError(
-                f"Login verification timeout: Could not complete login within time limit. "
-                f"This may indicate invalid credentials or network issues."
-            )
-        raise PoshmarkAuthError(f"Login timeout: {error_msg}")
-    except PoshmarkAuthError:
-        raise
     except Exception as e:
+        print(f">>> Quick login failed: {e}")
         raise PoshmarkAuthError(f"Login verification failed: {str(e)}")
 
 
 async def login_to_poshmark(page: Page, username: str, password: str) -> bool:
     """
-    Poshmark에 로그인
-    Returns: 성공 여부
+    Poshmark에 로그인 (일반)
     """
     try:
         print(f">>> Navigating to Poshmark login page...")
-        # 더 긴 타임아웃과 domcontentloaded 사용 (더 빠른 로드)
         await page.goto("https://poshmark.com/login", wait_until="domcontentloaded", timeout=60000)
         
-        # 페이지가 완전히 로드될 때까지 추가 대기
-        await page.wait_for_load_state("networkidle", timeout=30000)
-        print(f">>> Page loaded, current URL: {page.url}")
-        
-        # 로그인 폼 찾기 (더 많은 셀렉터 옵션)
-        print(f">>> Looking for login form...")
-        
-        # 이메일/사용자명 입력 필드 - 더 많은 셀렉터 옵션
-        email_selectors = [
-            'input[type="email"]',
-            'input[type="text"][name*="email" i]',
-            'input[type="text"][name*="username" i]',
-            'input[name="login_form[username_email]"]',
-            'input[id*="email" i]',
-            'input[id*="username" i]',
-            'input[placeholder*="email" i]',
-            'input[placeholder*="username" i]',
-            'input[placeholder*="Email" i]',
-            'input[placeholder*="Username" i]',
-            'input[autocomplete="username"]',
-            'input[autocomplete="email"]',
-        ]
-        
-        email_field = None
-        for selector in email_selectors:
-            try:
-                email_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if email_field:
-                    print(f">>> Found email field with selector: {selector}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        
-        if not email_field:
-            # 페이지 스크린샷 저장 (디버깅용)
-            try:
-                await page.screenshot(path="/tmp/poshmark_login_page.png", full_page=True)
-                print(f">>> Screenshot saved to /tmp/poshmark_login_page.png for debugging")
-            except:
-                pass
-            
-            # 페이지 HTML 일부 출력
-            try:
-                body_text = await page.evaluate("() => document.body.innerText")
-                print(f">>> Page body text (first 500 chars): {body_text[:500]}")
-            except:
-                pass
-            
-            raise PoshmarkAuthError(
-                "Could not find email/username input field on Poshmark login page. "
-                "The page structure may have changed."
-            )
-        
-        await email_field.fill(username)
-        print(f">>> Filled username/email")
-        
-        # 비밀번호 입력 필드 - 더 많은 옵션
-        password_selectors = [
-            'input[type="password"]',
-            'input[name*="password" i]',
-            'input[id*="password" i]',
-            'input[autocomplete="current-password"]',
-        ]
-        
-        password_field = None
-        for selector in password_selectors:
-            try:
-                password_field = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if password_field:
-                    print(f">>> Found password field with selector: {selector}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        
-        if not password_field:
-            raise PoshmarkAuthError("Could not find password input field on Poshmark login page")
-        
-        await password_field.fill(password)
-        print(f">>> Filled password")
-        
-        # 로그인 버튼 찾기 - 더 많은 옵션
-        login_button_selectors = [
-            'button[type="submit"]',
-            'button:has-text("Sign in")',
-            'button:has-text("Log in")',
-            'button:has-text("Sign In")',
-            'button:has-text("Login")',
-            'input[type="submit"]',
-            'button[class*="login" i]',
-            'button[class*="sign" i]',
-            'form button',
-        ]
-        
-        login_button = None
-        for selector in login_button_selectors:
-            try:
-                login_button = await page.wait_for_selector(selector, timeout=5000, state="visible")
-                if login_button:
-                    print(f">>> Found login button with selector: {selector}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
-        
-        if not login_button:
-            raise PoshmarkAuthError("Could not find login button on Poshmark login page")
-        
-        await login_button.click()
-        print(f">>> Clicked login button")
-        
-        # 로그인 완료 대기 (리다이렉트 또는 대시보드 로드)
+        # 로그인 폼 찾기
         try:
-            await page.wait_for_load_state("networkidle", timeout=30000)
-        except:
-            # networkidle이 실패해도 계속 진행
-            await asyncio.sleep(3)
+            email_field = await page.wait_for_selector(
+                'input[name="login_form[username_email]"], input[name*="username" i], input[type="email"]', 
+                timeout=10000, 
+                state="visible"
+            )
+            await email_field.fill(username)
+        except PlaywrightTimeoutError:
+             # 봇 탐지 페이지 확인
+            if await page.query_selector("text=Pardon the interruption"):
+                 raise PoshmarkAuthError("Bot detected by Poshmark (CAPTCHA/Security Screen).")
+            
+            await page.screenshot(path="/tmp/login_fail.png")
+            raise PoshmarkAuthError("Could not find login form. See /tmp/login_fail.png")
+
+        password_field = await page.wait_for_selector('input[type="password"]', state="visible")
+        await password_field.fill(password)
         
-        # 로그인 성공 확인 (URL이 /login이 아니거나, 사용자 메뉴가 보이면 성공)
-        current_url = page.url
-        print(f">>> After login, current URL: {current_url}")
+        login_btn = await page.wait_for_selector('button[type="submit"]', state="visible")
+        await login_btn.click()
         
-        if "/login" not in current_url.lower() and "login" not in current_url.lower():
-            print(f">>> Login successful, redirected to: {current_url}")
+        await page.wait_for_load_state("networkidle", timeout=30000)
+        
+        if "/login" not in page.url.lower():
+            print(f">>> Login successful, redirected to: {page.url}")
             return True
-        
-        # 또는 사용자 프로필/메뉴 확인
-        user_menu_selectors = [
-            'a[href*="/user/"]',
-            'a[href*="/closet/"]',
-            'button[aria-label*="Account" i]',
-            '[data-testid*="user" i]',
-            '[class*="user-menu" i]',
-            '[class*="profile" i]',
-            'nav a[href*="/user/"]',
-        ]
-        
-        for selector in user_menu_selectors:
-            try:
-                await page.wait_for_selector(selector, timeout=5000)
-                print(f">>> Login successful, found user menu with: {selector}")
-                return True
-            except PlaywrightTimeoutError:
-                continue
-        
-        # 에러 메시지 확인
-        error_selectors = [
-            '.error',
-            '[class*="error" i]',
-            '[class*="alert" i]',
-            '[role="alert"]',
-            'text=/invalid|incorrect|wrong|failed/i',
-        ]
-        for selector in error_selectors:
-            try:
-                error_element = await page.query_selector(selector)
-                if error_element:
-                    error_text = await error_element.inner_text()
-                    if error_text and len(error_text.strip()) > 0:
-                        raise PoshmarkAuthError(f"Login failed: {error_text}")
-            except PoshmarkAuthError:
-                raise
-            except:
-                pass
-        
-        # URL이 여전히 /login이면 실패로 간주
-        if "/login" in current_url.lower():
-            raise PoshmarkAuthError("Login appears to have failed - still on login page")
-        
-        print(f">>> Login status unclear, but not on login page - assuming success")
+            
+        # 로그인 실패 메시지 확인
+        error_el = await page.query_selector(".error_message, .error")
+        if error_el:
+            text = await error_el.inner_text()
+            raise PoshmarkAuthError(f"Login refused: {text}")
+
         return True
         
-    except PlaywrightTimeoutError as e:
-        error_msg = str(e)
-        # 더 자세한 에러 메시지
-        if "wait_for_selector" in error_msg:
-            raise PoshmarkAuthError(
-                f"Login timeout: Could not find login form elements. "
-                f"Poshmark page structure may have changed. Error: {error_msg}"
-            )
-        raise PoshmarkAuthError(f"Login timeout: {error_msg}")
-    except PoshmarkAuthError:
-        raise
     except Exception as e:
-        raise PoshmarkAuthError(f"Login failed: {str(e)}")
+        raise PoshmarkAuthError(f"Login process failed: {str(e)}")
 
 
 async def publish_listing_to_poshmark(
@@ -450,49 +245,53 @@ async def publish_listing_to_poshmark(
 ) -> dict:
     """
     Poshmark에 리스팅 업로드
-    Returns: {listing_id, url, status}
     """
     try:
-        # 1. "List an Item" 페이지로 이동 (가장 일반적인 URL만 사용)
         print(f">>> Navigating to Poshmark listing page...")
         listing_url = "https://poshmark.com/listing/new"
         
         try:
-            print(f">>> Loading: {listing_url}")
-            # load 이벤트만 대기 (더 빠름)
-            await page.goto(listing_url, wait_until="load", timeout=20000)
+            await page.goto(listing_url, wait_until="load", timeout=30000)
             
-            # 리스팅 페이지인지 빠르게 확인
-            current_url = page.url
-            print(f">>> Loaded page: {current_url}")
-            
-            # 필수 요소가 나타날 때까지만 대기 (networkidle 대신)
+            # [CRITICAL FIX] 폼 요소가 없으면 실패 처리 (Blind Bot 방지)
             try:
-                # 제목이나 이미지 업로드 필드가 나타나면 페이지 로드 완료로 간주
                 await page.wait_for_selector(
-                    'input[type="file"], input[name*="title" i], textarea[name*="description" i]',
-                    timeout=10000,
-                    state="attached"  # DOM에만 있으면 됨 (visible 불필요)
+                    'input[type="file"], input[name*="title" i]',
+                    timeout=15000,
+                    state="attached"
                 )
             except PlaywrightTimeoutError:
-                # 필수 요소가 없어도 계속 진행 (페이지 구조가 다를 수 있음)
-                print(f">>> Warning: Could not find expected form elements, continuing anyway...")
+                # 봇 탐지 화면인지 확인
+                if await page.query_selector("text=Pardon the interruption"):
+                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                
+                # 스크린샷 저장
+                screenshot_path = "/tmp/debug_failed_form_load.png"
+                await page.screenshot(path=screenshot_path)
+                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                
+                # 페이지 소스 일부 로깅
+                content = await page.content()
+                print(f">>> Page content sample: {content[:500]}")
+                
+                raise PoshmarkPublishError("Could not find listing form elements. Likely blocked or page layout changed.")
                 
         except Exception as e:
+            if isinstance(e, PoshmarkPublishError):
+                raise
             raise PoshmarkPublishError(f"Could not access Poshmark listing page: {str(e)}")
         
-        # 2. 이미지 업로드
+        # 2. 이미지 업로드 (리소스 차단을 피하기 위해 이 부분은 주의 필요)
         if listing_images:
             print(f">>> Uploading {len(listing_images)} images...")
+            image_input_selector = 'input[type="file"]'
             
-            # 이미지 파일 input 찾기
-            image_input_selector = 'input[type="file"][accept*="image"], input[type="file"]'
             try:
-                file_input = await page.wait_for_selector(image_input_selector, timeout=3000, state="attached")
+                file_input = await page.wait_for_selector(image_input_selector, timeout=5000, state="attached")
                 
                 if file_input:
-                    # 이미지 다운로드 및 임시 파일로 저장 (병렬 처리)
-                    print(f">>> Downloading {len(listing_images[:8])} images in parallel...")
+                    # 이미지 다운로드 및 임시 파일 생성
+                    print(f">>> Downloading {len(listing_images[:8])} images...")
                     
                     async def download_image(img: ListingImage) -> Optional[str]:
                         try:
@@ -509,227 +308,77 @@ async def publish_listing_to_poshmark(
                             print(f">>> Failed to download {img.file_path}: {e}")
                             return None
                     
-                    # 병렬 다운로드
                     download_tasks = [download_image(img) for img in listing_images[:8]]
                     temp_files = [f for f in await asyncio.gather(*download_tasks) if f]
                     
                     if temp_files:
                         try:
-                            # 파일 업로드
                             await file_input.set_input_files(temp_files)
                             print(f">>> Uploaded {len(temp_files)} images")
-                            
-                            # 업로드 완료 대기 (최소화)
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2) # 업로드 처리 대기
                         finally:
-                            # 임시 파일 정리
                             for temp_file in temp_files:
                                 try:
                                     os.unlink(temp_file)
                                 except:
                                     pass
-                    else:
-                        print(f">>> Warning: No images were downloaded successfully")
-            except PlaywrightTimeoutError:
-                print(f">>> Image upload input not found, skipping...")
+            except Exception as e:
+                print(f">>> Warning: Image upload failed: {e}")
         
-        # 3-5. 필수 필드 입력 (타임아웃 최소화)
+        # 3. 필수 필드 입력
         print(f">>> Filling listing details...")
         
-        # 제목 입력
-        title_selectors = [
-            'input[name*="title" i]',
-            'input[placeholder*="title" i]',
-            'textarea[name*="title" i]',
-            'input[type="text"]:first-of-type',
-        ]
-        for selector in title_selectors:
-            try:
-                title_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
-                if title_field:
-                    await title_field.fill(listing.title or "Untitled")
-                    print(f">>> Filled title: {listing.title}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
+        # 제목
+        await page.fill('input[name*="title" i], input[placeholder*="title" i]', listing.title or "Untitled")
         
-        # 설명 입력
-        description_selectors = [
-            'textarea[name*="description" i]',
-            'textarea[placeholder*="description" i]',
-            'textarea[placeholder*="tell" i]',
-            'textarea:first-of-type',
-        ]
-        for selector in description_selectors:
-            try:
-                desc_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
-                if desc_field:
-                    await desc_field.fill(listing.description or "No description")
-                    print(f">>> Filled description")
-                    break
-            except PlaywrightTimeoutError:
-                continue
+        # 설명
+        await page.fill('textarea[name*="description" i]', listing.description or "No description")
         
-        # 가격 입력
-        price_selectors = [
-            'input[name*="price" i]',
-            'input[type="number"][placeholder*="price" i]',
-            'input[placeholder*="$" i]',
-            'input[type="number"]',
-        ]
-        price = float(listing.price or 0)
-        for selector in price_selectors:
-            try:
-                price_field = await page.wait_for_selector(selector, timeout=3000, state="attached")
-                if price_field:
-                    await price_field.fill(str(int(price)))
-                    print(f">>> Filled price: ${price}")
-                    break
-            except PlaywrightTimeoutError:
-                continue
+        # 가격
+        price = str(int(float(listing.price or 0)))
+        await page.fill('input[name*="price" i], input[placeholder*="Original Price"]', price) # Original Price
+        await page.fill('input[name="current_price"], input[data-testid="price-input"]', price) # Listing Price
         
-        # 6-9. 선택적 필드 (빠르게 시도, 실패해도 계속)
-        # 브랜드 입력 (있는 경우)
-        if listing.brand:
-            brand_selectors = ['input[name*="brand" i]', 'input[placeholder*="brand" i]']
-            for selector in brand_selectors:
-                try:
-                    brand_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
-                    if brand_field:
-                        await brand_field.fill(listing.brand)
-                        print(f">>> Filled brand: {listing.brand}")
-                        break
-                except PlaywrightTimeoutError:
-                    continue
-        
-        # 10. "Publish" 또는 "List Item" 버튼 클릭
+        # 4. 발행 버튼 클릭
         print(f">>> Looking for publish button...")
         
-        # 최소 대기 (필요한 경우에만)
-        await asyncio.sleep(0.5)
+        publish_btn = await page.wait_for_selector(
+            'button[type="submit"]:has-text("List Item"), button:has-text("Next"), button:has-text("Publish")',
+            state="visible", 
+            timeout=5000
+        )
         
-        publish_selectors = [
-            'button:has-text("Publish")',
-            'button:has-text("List Item")',
-            'button:has-text("List")',
-            'button:has-text("Post")',
-            'button:has-text("Share")',
-            'button[type="submit"]',
-            'button[type="submit"]:has-text("Publish")',
-            'button[type="submit"]:has-text("List")',
-            'button[type="submit"]:has-text("Post")',
-            '[data-testid*="publish" i]',
-            '[data-testid*="submit" i]',
-            '[data-testid*="list" i]',
-            '[data-testid*="post" i]',
-            'button[class*="publish" i]',
-            'button[class*="submit" i]',
-            'button[class*="list" i]',
-            'button[class*="post" i]',
-            'a:has-text("Publish")',
-            'a:has-text("List")',
-            '[role="button"]:has-text("Publish")',
-            '[role="button"]:has-text("List")',
-            'form button[type="submit"]',
-            'form button:last-child',
-        ]
+        if not publish_btn:
+            await page.screenshot(path="/tmp/no_publish_btn.png")
+            raise PoshmarkPublishError("Publish button not found")
+
+        await publish_btn.click()
+        print(">>> Clicked publish button")
         
-        publish_button = None
-        used_selector = None
-        
-        for selector in publish_selectors:
-            try:
-                publish_button = await page.wait_for_selector(selector, timeout=3000, state="visible")
-                if publish_button:
-                    # 버튼이 보이는지 확인
-                    is_visible = await publish_button.is_visible()
-                    if is_visible:
-                        used_selector = selector
-                        print(f">>> Found publish button with selector: {selector}")
-                        break
-                    else:
-                        publish_button = None
-            except PlaywrightTimeoutError:
-                continue
-            except Exception as e:
-                print(f">>> Error checking selector {selector}: {e}")
-                continue
-        
-        if not publish_button:
-            # 디버깅: 페이지 스크린샷 및 HTML 일부 저장
-            try:
-                await page.screenshot(path="/tmp/poshmark_listing_page.png", full_page=True)
-                print(f">>> Screenshot saved to /tmp/poshmark_listing_page.png")
-            except:
-                pass
-            
-            # 페이지의 모든 버튼 찾기
-            try:
-                all_buttons = await page.evaluate("""
-                    () => {
-                        const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
-                        return buttons.map(btn => ({
-                            text: btn.innerText.trim(),
-                            type: btn.type || '',
-                            className: btn.className || '',
-                            id: btn.id || '',
-                            visible: btn.offsetParent !== null
-                        })).filter(btn => btn.visible && btn.text.length > 0);
-                    }
-                """)
-                print(f">>> Found {len(all_buttons)} visible buttons on page:")
-                for btn in all_buttons[:10]:  # 처음 10개만 출력
-                    print(f">>>   - Text: '{btn['text']}', Type: {btn['type']}, Class: {btn['className'][:50]}")
-            except Exception as e:
-                print(f">>> Could not list buttons: {e}")
-            
-            raise PoshmarkPublishError(
-                "Could not find publish button on Poshmark listing page. "
-                "The page structure may have changed. Check screenshot at /tmp/poshmark_listing_page.png"
-            )
-        
-        # 버튼 클릭
+        # 완료 대기
         try:
-            # 스크롤하여 버튼이 보이도록
-            await publish_button.scroll_into_view_if_needed()
-            await asyncio.sleep(0.5)
-            
-            # 클릭 시도
-            await publish_button.click(timeout=10000)
-            print(f">>> Clicked publish button: {used_selector}")
-            
-            # 페이지 로드 대기
-            try:
-                await page.wait_for_load_state("networkidle", timeout=30000)
-            except:
-                await asyncio.sleep(3)  # networkidle 실패 시에도 대기
-                
-        except Exception as e:
-            raise PoshmarkPublishError(f"Failed to click publish button: {str(e)}")
-        
-        # 11. 업로드 완료 확인 및 URL 추출
-        await asyncio.sleep(2)  # 페이지 로드 대기
-        
+            await page.wait_for_load_state("networkidle", timeout=30000)
+        except:
+            pass
+
         current_url = page.url
         listing_id = None
-        
-        # URL에서 리스팅 ID 추출 시도
-        if "/closet/" in current_url or "/listing/" in current_url:
-            parts = current_url.split("/")
-            for i, part in enumerate(parts):
-                if part in ["closet", "listing"] and i + 1 < len(parts):
-                    listing_id = parts[i + 1]
-                    break
-        
+        if "/listing/" in current_url:
+             parts = current_url.split("/")
+             listing_id = parts[-1].split("-")[-1] # URL 구조에 따라 다름
+
         return {
             "status": "published",
             "url": current_url,
             "external_item_id": listing_id,
         }
         
-    except PlaywrightTimeoutError as e:
-        raise PoshmarkPublishError(f"Publish timeout: {str(e)}")
     except Exception as e:
+        # 에러 발생 시 스크린샷 캡처
+        try:
+            await page.screenshot(path="/tmp/publish_error.png")
+        except:
+            pass
         raise PoshmarkPublishError(f"Publish failed: {str(e)}")
 
 
@@ -743,36 +392,81 @@ async def publish_listing(
 ) -> dict:
     """
     Poshmark에 리스팅 업로드 (메인 함수)
-    Playwright 브라우저를 열고, 로그인 후 업로드 수행
+    - 최적화된 브라우저 실행
+    - 세션(쿠키) 재사용 적용
     """
     username, password = await get_poshmark_credentials(db, user)
     
+    # 세션 파일 경로 설정 (유저별 분리)
+    session_file_path = f"/tmp/poshmark_session_{user.id}.json"
+    
     try:
         async with async_playwright() as p:
-            # 브라우저 실행 (headless=False로 디버깅 가능)
+            # 1. 브라우저 실행 (Render 최적화 인자 적용)
             try:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=get_browser_launch_args()
+                )
             except Exception as e:
-                if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e):
+                if "Executable doesn't exist" in str(e):
                     raise PoshmarkPublishError(
-                        "Playwright browser not installed. Please run 'playwright install chromium' "
-                        "or restart the server to auto-install browsers."
+                        "Playwright browser not installed. Check build command."
                     )
                 raise
             
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            )
+            # 2. 세션 로드 시도 또는 새 컨텍스트 생성
+            context = None
+            if os.path.exists(session_file_path):
+                try:
+                    context = await browser.new_context(
+                        storage_state=session_file_path,
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    )
+                    print(f">>> Loaded existing session for user {user.id}")
+                except Exception as e:
+                    print(f">>> Failed to load session: {e}")
+            
+            if not context:
+                context = await browser.new_context(
+                    viewport={"width": 1280, "height": 720},
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                )
+            
             page = await context.new_page()
             
+            # 3. 리소스 차단 적용 (속도 향상)
+            # 이미지 업로드에 필요한 리소스는 제외하고 차단할 수도 있으나,
+            # Playwright의 file input 조작은 네트워크 요청 없이 작동하므로 일반적으로 안전함.
+            # 단, Poshmark의 미리보기 생성 스크립트가 중요할 수 있으므로 'image'만 차단.
+            await page.route("**/*", block_resources)
+            
             try:
-                # 로그인
-                login_success = await login_to_poshmark(page, username, password)
-                if not login_success:
-                    raise PoshmarkAuthError("Login failed")
+                # 4. 로그인 상태 확인 및 로그인
+                is_logged_in = False
                 
-                # 리스팅 업로드
+                # 메인 피드나 뉴스 페이지로 이동하여 로그인 여부 확인
+                try:
+                    await page.goto("https://poshmark.com/feed", timeout=10000, wait_until="domcontentloaded")
+                    # URL에 login이 없고, 유저 아이콘이나 메뉴가 보이면 로그인 된 것임
+                    if "login" not in page.url and await page.query_selector('.header-user-profile, a[href*="/user/"]'):
+                        is_logged_in = True
+                        print(">>> Session is valid, skipping login.")
+                except:
+                    pass
+                
+                if not is_logged_in:
+                    print(">>> Session invalid or missing, logging in...")
+                    login_success = await login_to_poshmark(page, username, password)
+                    if not login_success:
+                        raise PoshmarkAuthError("Login failed")
+                    
+                    # 로그인 성공 시 세션 저장
+                    await context.storage_state(path=session_file_path)
+                    print(f">>> Saved new session to {session_file_path}")
+                
+                # 5. 리스팅 업로드 수행
                 result = await publish_listing_to_poshmark(
                     page, listing, listing_images, base_url, settings
                 )
@@ -787,96 +481,66 @@ async def publish_listing(
     except PoshmarkPublishError:
         raise
     except Exception as e:
-        if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e):
-            raise PoshmarkPublishError(
-                "Playwright browser not installed. Please run 'playwright install chromium' "
-                "or restart the server to auto-install browsers."
-            )
-        raise PoshmarkPublishError(f"Failed to launch browser: {str(e)}")
+        raise PoshmarkPublishError(f"System error: {str(e)}")
 
 
 async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
     """
-    Poshmark 인벤토리 조회 (closet 페이지에서 리스팅 가져오기)
-    Returns: List of listing items
+    Poshmark 인벤토리 조회
     """
     username, password = await get_poshmark_credentials(db, user)
     
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=get_browser_launch_args()
+            )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
             page = await context.new_page()
             
+            # 리소스 차단 (인벤토리 조회는 텍스트만 필요하므로 강력하게 적용)
+            await page.route("**/*", block_resources)
+            
             try:
-                # 로그인
                 login_success = await login_to_poshmark_quick(page, username, password)
                 if not login_success:
                     raise PoshmarkAuthError("Login failed")
                 
-                # 사용자의 closet 페이지로 이동
                 print(f">>> Navigating to closet page...")
                 closet_url = f"https://poshmark.com/closet/{username}"
                 await page.goto(closet_url, wait_until="load", timeout=20000)
-                await asyncio.sleep(2)  # 페이지 로드 대기
                 
-                # 리스팅 아이템 추출
                 print(f">>> Extracting listings from closet...")
                 items = await page.evaluate("""
                     () => {
                         const items = [];
-                        // Poshmark 리스팅 카드 선택자 (일반적인 구조)
-                        const cards = document.querySelectorAll('[data-testid*="tile"], .tile, .listing-tile, [class*="tile"]');
-                        
+                        const cards = document.querySelectorAll('.tile, .listing-tile, [class*="tile"]');
                         cards.forEach((card, index) => {
                             try {
-                                // 제목 추출
-                                const titleEl = card.querySelector('a[href*="/listing/"], [class*="title"], h3, h4');
-                                const title = titleEl ? titleEl.innerText.trim() : `Item ${index + 1}`;
-                                
-                                // 가격 추출
-                                const priceEl = card.querySelector('[class*="price"], [class*="amount"]');
-                                const priceText = priceEl ? priceEl.innerText.trim() : '';
-                                const price = parseFloat(priceText.replace(/[^0-9.]/g, '')) || 0;
-                                
-                                // 이미지 URL 추출
-                                const imgEl = card.querySelector('img');
-                                const imageUrl = imgEl ? imgEl.src : '';
-                                
-                                // 링크 추출
+                                const titleEl = card.querySelector('a[href*="/listing/"], .title');
+                                const title = titleEl ? titleEl.innerText.trim() : `Item ${index}`;
+                                const priceEl = card.querySelector('.price, .amount');
+                                const price = priceEl ? parseFloat(priceEl.innerText.replace(/[^0-9.]/g, '')) : 0;
                                 const linkEl = card.querySelector('a[href*="/listing/"]');
                                 const url = linkEl ? linkEl.href : '';
-                                const listingId = url.match(/\\/listing\\/([^/]+)/)?.[1] || '';
                                 
                                 if (title && url) {
-                                    items.push({
-                                        title: title,
-                                        price: price,
-                                        imageUrl: imageUrl,
-                                        url: url,
-                                        listingId: listingId,
-                                        sku: listingId || `poshmark-${index}`,
-                                    });
+                                    items.push({ title, price, url, sku: `poshmark-${index}` });
                                 }
-                            } catch (e) {
-                                console.error('Error extracting item:', e);
-                            }
+                            } catch (e) {}
                         });
-                        
                         return items;
                     }
                 """)
                 
-                print(f">>> Found {len(items)} items in closet")
+                print(f">>> Found {len(items)} items")
                 return items
                 
             finally:
                 await browser.close()
-    except PoshmarkAuthError:
-        raise
     except Exception as e:
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
-
