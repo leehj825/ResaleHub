@@ -13,6 +13,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Suppress warnings about obsolete Java 8 source/target from plugin dependencies
     }
 
     kotlinOptions {

@@ -28,6 +28,8 @@ subprojects {
     tasks.withType<JavaCompile>().configureEach {
         sourceCompatibility = "17"
         targetCompatibility = "17"
+        // Suppress warnings about obsolete source/target options from plugin dependencies
+        options.compilerArgs.addAll(listOf("-Xlint:-options"))
         // Do not set `options.release` for Android modules (AGP manages bootclasspath).
         // Only set `options.release` for non-Android JVM projects when supported.
         val isAndroidModule = try {
