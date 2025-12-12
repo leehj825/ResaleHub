@@ -9,6 +9,8 @@ Poshmark Playwright 자동화 클라이언트
 import asyncio
 import os
 import tempfile
+import json
+import logging
 from typing import List, Optional
 import httpx
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
@@ -18,7 +20,6 @@ from app.models.marketplace_account import MarketplaceAccount
 from app.models.user import User
 from app.models.listing import Listing
 from app.models.listing_image import ListingImage
-import json
 
 class PoshmarkAuthError(Exception):
     """Poshmark 인증 관련 에러"""
@@ -34,6 +35,7 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
     """
     DB에서 Poshmark 계정 정보 조회
     Returns: (username, password)
+    DEPRECATED: Use get_poshmark_cookies instead for cookie-based auth
     """
     account = (
         db.query(MarketplaceAccount)
@@ -55,6 +57,35 @@ async def get_poshmark_credentials(db: Session, user: User) -> tuple[str, str]:
         raise PoshmarkAuthError("Poshmark credentials not configured")
 
     return username, password
+
+
+async def get_poshmark_cookies(db: Session, user: User) -> tuple[str, list]:
+    """
+    DB에서 Poshmark 쿠키 정보 조회
+    Returns: (username, cookies_list)
+    """
+    account = (
+        db.query(MarketplaceAccount)
+        .filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "poshmark",
+        )
+        .first()
+    )
+
+    if not account or not account.access_token:
+        raise PoshmarkAuthError("Poshmark account not connected")
+
+    # access_token 필드에 JSON 형태로 쿠키가 저장되어 있음
+    try:
+        cookies = json.loads(account.access_token)
+        if not isinstance(cookies, list):
+            raise PoshmarkAuthError("Invalid cookie format in database")
+        
+        username = account.username or "Connected Account"
+        return username, cookies
+    except json.JSONDecodeError:
+        raise PoshmarkAuthError("Failed to parse cookies from database")
 
 
 async def block_resources(route):
@@ -500,10 +531,11 @@ async def publish_listing(
 
 async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
     """
-    Poshmark 인벤토리 조회
+    Poshmark 인벤토리 조회 (쿠키 기반 인증 사용)
     """
-    username, password = await get_poshmark_credentials(db, user)
+    username, cookies = await get_poshmark_cookies(db, user)
     
+    # 전체 작업에 타임아웃 설정 (최대 2분)
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -514,49 +546,189 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
+            
+            # 쿠키를 컨텍스트에 추가
+            try:
+                # Playwright cookie format에 맞게 변환
+                playwright_cookies = []
+                for cookie in cookies:
+                    playwright_cookie = {
+                        "name": cookie.get("name", ""),
+                        "value": cookie.get("value", ""),
+                        "domain": cookie.get("domain", "poshmark.com"),
+                        "path": cookie.get("path", "/"),
+                    }
+                    # Optional fields
+                    if cookie.get("secure"):
+                        playwright_cookie["secure"] = True
+                    if cookie.get("httpOnly"):
+                        playwright_cookie["httpOnly"] = True
+                    if cookie.get("expirationDate"):
+                        playwright_cookie["expires"] = int(cookie["expirationDate"])
+                    if cookie.get("sameSite"):
+                        playwright_cookie["sameSite"] = cookie["sameSite"].upper()
+                    
+                    playwright_cookies.append(playwright_cookie)
+                
+                await context.add_cookies(playwright_cookies)
+                print(f">>> Loaded {len(playwright_cookies)} cookies into browser context")
+            except Exception as e:
+                print(f">>> Warning: Failed to load some cookies: {e}")
+            
             page = await context.new_page()
             
             # 리소스 차단 (인벤토리 조회는 텍스트만 필요하므로 강력하게 적용)
-            await page.route("**/*", block_resources)
+            # 단, 스크립트는 허용 (동적 콘텐츠 로딩에 필요)
+            async def selective_block(route):
+                resource_type = route.request.resource_type
+                if resource_type in ["image", "font", "media"]:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            
+            await page.route("**/*", selective_block)
             
             try:
-                login_success = await login_to_poshmark_quick(page, username, password)
-                if not login_success:
-                    raise PoshmarkAuthError("Login failed")
+                # 로그인 상태 확인
+                print(f">>> Checking login status...")
+                await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
+                
+                # 로그인 여부 확인
+                is_logged_in = False
+                if "login" not in page.url.lower():
+                    user_profile = await page.query_selector('.header-user-profile, a[href*="/user/"]')
+                    if user_profile:
+                        is_logged_in = True
+                        print(">>> Cookie authentication successful")
+                
+                if not is_logged_in:
+                    raise PoshmarkAuthError("Cookies are invalid or expired. Please reconnect your Poshmark account.")
+                
+                # 실제 username 추출 (closet URL에 사용)
+                actual_username = username
+                try:
+                    user_link = await page.query_selector('a[href*="/user/"]')
+                    if user_link:
+                        href = await user_link.get_attribute("href")
+                        if href:
+                            import re
+                            match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                            if match:
+                                actual_username = match.group(1)
+                                print(f">>> Extracted username: {actual_username}")
+                except Exception as e:
+                    print(f">>> Could not extract username from page: {e}")
                 
                 print(f">>> Navigating to closet page...")
-                closet_url = f"https://poshmark.com/closet/{username}"
-                await page.goto(closet_url, wait_until="load", timeout=20000)
+                closet_url = f"https://poshmark.com/closet/{actual_username}"
+                try:
+                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=30000)
+                    # 짧은 대기 후 즉시 추출 시도 (동적 로딩 대기)
+                    await asyncio.sleep(3)  # 3초 대기로 동적 콘텐츠 로딩 허용
+                except PlaywrightTimeoutError:
+                    print(">>> Warning: Page load timeout, but continuing with extraction...")
+                    # 타임아웃이 발생해도 계속 진행
                 
                 print(f">>> Extracting listings from closet...")
                 items = await page.evaluate("""
                     () => {
                         const items = [];
-                        const cards = document.querySelectorAll('.tile, .listing-tile, [class*="tile"]');
+                        // 다양한 선택자 시도
+                        const selectors = [
+                            '.tile',
+                            '.listing-tile',
+                            '[class*="tile"]',
+                            '[class*="listing"]',
+                            'div[data-testid*="listing"]',
+                            'a[href*="/listing/"]'
+                        ];
+                        
+                        let cards = [];
+                        for (const selector of selectors) {
+                            cards = document.querySelectorAll(selector);
+                            if (cards.length > 0) {
+                                console.log('Found items with selector:', selector);
+                                break;
+                            }
+                        }
+                        
+                        if (cards.length === 0) {
+                            // Fallback: 모든 링크에서 /listing/ 찾기
+                            const allLinks = document.querySelectorAll('a[href*="/listing/"]');
+                            cards = Array.from(allLinks).map(link => link.closest('div') || link.parentElement).filter(Boolean);
+                        }
+                        
                         cards.forEach((card, index) => {
                             try {
-                                const titleEl = card.querySelector('a[href*="/listing/"], .title');
-                                const title = titleEl ? titleEl.innerText.trim() : `Item ${index}`;
-                                const priceEl = card.querySelector('.price, .amount');
-                                const price = priceEl ? parseFloat(priceEl.innerText.replace(/[^0-9.]/g, '')) : 0;
-                                const linkEl = card.querySelector('a[href*="/listing/"]');
-                                const url = linkEl ? linkEl.href : '';
+                                const linkEl = card.querySelector('a[href*="/listing/"]') || card.closest('a[href*="/listing/"]') || (card.tagName === 'A' && card.href.includes('/listing/') ? card : null);
+                                if (!linkEl) return;
                                 
-                                if (title && url) {
-                                    items.push({ title, price, url, sku: `poshmark-${index}` });
+                                const url = linkEl.href || linkEl.getAttribute('href');
+                                if (!url || !url.includes('/listing/')) return;
+                                
+                                const titleEl = card.querySelector('.title, [class*="title"], h3, h4, .item-title') || linkEl;
+                                let title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+                                if (!title) {
+                                    // URL에서 추출 시도
+                                    const urlMatch = url.match(/\/listing\/([^\/]+)/);
+                                    title = urlMatch ? urlMatch[1].replace(/-/g, ' ') : `Item ${index + 1}`;
                                 }
-                            } catch (e) {}
+                                
+                                const priceEl = card.querySelector('.price, .amount, [class*="price"], [class*="amount"]');
+                                let price = 0;
+                                if (priceEl) {
+                                    const priceText = priceEl.innerText || priceEl.textContent || '';
+                                    const priceMatch = priceText.match(/[\d.]+/);
+                                    if (priceMatch) {
+                                        price = parseFloat(priceMatch[0]);
+                                    }
+                                }
+                                
+                                const imgEl = card.querySelector('img');
+                                const imageUrl = imgEl ? (imgEl.src || imgEl.getAttribute('src') || '') : '';
+                                
+                                // URL에서 listing ID 추출
+                                const listingIdMatch = url.match(/\/listing\/([^\/\?]+)/);
+                                const listingId = listingIdMatch ? listingIdMatch[1] : `poshmark-${index}`;
+                                
+                                items.push({ 
+                                    title: title || `Item ${index + 1}`, 
+                                    price: price || 0, 
+                                    url: url,
+                                    imageUrl: imageUrl || '',
+                                    sku: `poshmark-${listingId}`,
+                                    listingId: listingId
+                                });
+                            } catch (e) {
+                                console.error('Error extracting item:', e);
+                            }
                         });
+                        
                         return items;
                     }
                 """)
                 
                 print(f">>> Found {len(items)} items")
+                
+                if len(items) == 0:
+                    # 디버깅을 위해 스크린샷 저장
+                    try:
+                        await page.screenshot(path="/tmp/poshmark_closet_empty.png", full_page=True)
+                        print(">>> Screenshot saved to /tmp/poshmark_closet_empty.png for debugging")
+                    except:
+                        pass
+                    print(">>> Warning: No items found. The page structure may have changed.")
+                
                 return items
                 
             finally:
                 await browser.close()
+    except PoshmarkAuthError:
+        raise
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f">>> Error fetching inventory: {error_details}")
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
     
 
