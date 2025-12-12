@@ -3,11 +3,12 @@ from datetime import datetime, timedelta
 import base64
 import httpx
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
+from app.core.constants import EBAY_SCOPES
 from app.models.marketplace_account import MarketplaceAccount
 from app.models.user import User
-from app.routers import marketplaces  # EBAY_SCOPES 사용
 
 settings = get_settings()
 
@@ -22,8 +23,9 @@ async def get_valid_ebay_access_token(db: Session, user: User) -> str:
     - access_token이 아직 유효하면 그대로 반환
     - 만료되었고 refresh_token 있으면 새로 갱신 후 DB 저장
     """
-    account = (
-        db.query(MarketplaceAccount)
+    # Run synchronous DB query in threadpool to avoid blocking event loop
+    account = await run_in_threadpool(
+        lambda: db.query(MarketplaceAccount)
         .filter(
             MarketplaceAccount.user_id == user.id,
             MarketplaceAccount.marketplace == "ebay",
@@ -61,7 +63,7 @@ async def get_valid_ebay_access_token(db: Session, user: User) -> str:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": account.refresh_token,
-        "scope": " ".join(marketplaces.EBAY_SCOPES),
+        "scope": " ".join(EBAY_SCOPES),
     }
 
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -82,8 +84,9 @@ async def get_valid_ebay_access_token(db: Session, user: User) -> str:
     account.access_token = new_access_token
     account.token_expires_at = datetime.utcnow() + timedelta(seconds=int(expires_in))
 
-    db.commit()
-    db.refresh(account)
+    # Run synchronous DB operations in threadpool
+    await run_in_threadpool(lambda: db.commit())
+    await run_in_threadpool(lambda: db.refresh(account))
 
     return account.access_token
 

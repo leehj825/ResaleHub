@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -36,7 +34,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
   final _listingService = ListingService();
 
   // 선택된 이미지들
-  List<File> _selectedImages = [];
+  List<PlatformFile> _selectedImages = [];
 
   Future<void> _pickImages() async {
     setState(() {
@@ -52,10 +50,7 @@ class _NewListingScreenState extends State<NewListingScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         setState(() {
-          _selectedImages = result.files
-              .where((f) => f.path != null)
-              .map((f) => File(f.path!))
-              .toList();
+          _selectedImages = result.files;
         });
       }
     } catch (e) {

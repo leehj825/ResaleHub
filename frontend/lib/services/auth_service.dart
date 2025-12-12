@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/platform_helper.dart';
 
 class AuthService {
   AuthService._internal();
@@ -62,7 +62,7 @@ class AuthService {
   }
 
   Future<void> _saveToken(String token) async {
-    if (Platform.isMacOS) {
+    if (isMacOS) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('access_token', token);
     } else {
@@ -71,7 +71,7 @@ class AuthService {
   }
 
   Future<String?> getToken() async {
-    if (Platform.isMacOS) {
+    if (isMacOS) {
       final prefs = await SharedPreferences.getInstance();
       return prefs.getString('access_token');
     } else {
@@ -80,7 +80,7 @@ class AuthService {
   }
 
   Future<void> logout() async {
-    if (Platform.isMacOS) {
+    if (isMacOS) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('access_token');
     } else {

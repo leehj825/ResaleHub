@@ -26,6 +26,7 @@ from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
 from app.models.connect_token import ConnectToken
 
+from app.core.constants import EBAY_SCOPES
 from app.services.ebay_client import ebay_get, ebay_post, ebay_put, ebay_delete, EbayAuthError
 from app.services.poshmark_client import (
     publish_listing as poshmark_publish_listing,
@@ -41,14 +42,6 @@ router = APIRouter(
 )
 
 settings = get_settings()
-
-EBAY_SCOPES = [
-    "https://api.ebay.com/oauth/api_scope", 
-    "https://api.ebay.com/oauth/api_scope/sell.account.readonly", 
-    "https://api.ebay.com/oauth/api_scope/sell.account",
-    "https://api.ebay.com/oauth/api_scope/sell.inventory",
-    "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
-]
 
 def _get_owned_listing_or_404(listing_id: int, user: User, db: Session) -> Listing:
     listing = (

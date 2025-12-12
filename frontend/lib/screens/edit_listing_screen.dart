@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -27,7 +25,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
   String? _error;
 
   final _listingService = ListingService();
-  List<File> _newImages = [];
+  List<PlatformFile> _newImages = [];
 
   @override
   void initState() {
@@ -59,10 +57,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
 
     if (result != null && result.files.isNotEmpty) {
       setState(() {
-        _newImages = result.files
-            .where((f) => f.path != null)
-            .map((f) => File(f.path!))
-            .toList();
+        _newImages = result.files;
       });
     }
   }

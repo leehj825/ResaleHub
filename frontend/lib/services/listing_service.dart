@@ -1,6 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import '../models/listing.dart';
@@ -156,7 +158,7 @@ class ListingService {
     }
   }
 
-  Future<void> uploadImages(int listingId, List<File> files) async {
+  Future<void> uploadImages(int listingId, List<PlatformFile> files) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -169,14 +171,29 @@ class ListingService {
     request.headers['Authorization'] = 'Bearer $token';
 
     for (final file in files) {
-      final fileName = file.path.split('/').last;
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'files',
-          file.path,
-          filename: fileName,
-        ),
-      );
+      if (kIsWeb) {
+        // Web platform: use bytes
+        if (file.bytes != null) {
+          request.files.add(
+            http.MultipartFile.fromBytes(
+              'files',
+              file.bytes!,
+              filename: file.name,
+            ),
+          );
+        }
+      } else {
+        // Mobile/Desktop: use file path
+        if (file.path != null) {
+          request.files.add(
+            await http.MultipartFile.fromPath(
+              'files',
+              file.path!,
+              filename: file.name,
+            ),
+          );
+        }
+      }
     }
 
     final streamed = await request.send();

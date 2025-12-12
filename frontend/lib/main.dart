@@ -1,15 +1,16 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart'; // [필수] import
 
-import 'screens/login_screen.dart'; 
-// ... 기타 import ...
+import 'screens/login_screen.dart';
+import 'utils/platform_helper.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // [macOS/Windows/Linux] 데스크톱 앱 창 크기 설정 (Galaxy S25 비율 근사치)
-  if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+  // Skip window manager on web platform
+  if (isDesktop) {
     await windowManager.ensureInitialized();
 
     WindowOptions windowOptions = const WindowOptions(
