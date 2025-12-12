@@ -321,13 +321,15 @@ async def publish_to_ebay(listing_id: int, request: Request, db: Session = Depen
     listing_images = db.query(ListingImage).filter(ListingImage.listing_id == listing_id).order_by(ListingImage.sort_order.asc()).all()
     base_url = str(request.base_url).rstrip('/')
     for img in listing_images:
-    return HTMLResponse(content=f"""
-        if full_url.startswith("http") and "127.0.0.1" not in full_url and "localhost" not in full_url: image_urls.append(full_url)
+        full_url = f"{base_url}{settings.media_url}/{img.file_path}"
+        if full_url.startswith("http") and "127.0.0.1" not in full_url and "localhost" not in full_url:
+            image_urls.append(full_url)
     if not image_urls:
         raw_images = getattr(listing, "image_urls", []) or []
         if isinstance(raw_images, list):
             for img in raw_images:
-                if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img: image_urls.append(img)
+                if isinstance(img, str) and img.startswith("http") and "127.0.0.1" not in img and "localhost" not in img:
+                    image_urls.append(img)
 
     merchant_location_key = await _ensure_merchant_location(db, current_user)
     policies = await _get_ebay_policies(db, current_user)
@@ -531,7 +533,7 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
     # flow where the browser posts cookies back to the app without running Playwright.
     base_url = str(request.base_url).rstrip('/')
     submit_url = f"{base_url}/marketplaces/poshmark/connect/cookies_form"
-    return HTMLResponse(content=f"""
+    return HTMLResponse(content="""
 <html>
     <head>
         <meta charset="utf-8" />
@@ -603,7 +605,7 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
         </script>
     </body>
 </html>
-""")
+""".replace("{submit_url}", submit_url).replace("{token}", token))
 
 
 @router.post("/poshmark/connect/cookies_form")
