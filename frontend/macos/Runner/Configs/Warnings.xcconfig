@@ -11,3 +11,9 @@ CLANG_WARN_OBJC_REPEATED_USE_OF_WEAK = YES
 CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES
 GCC_WARN_SHADOW = YES
 CLANG_WARN_UNREACHABLE_CODE = YES
+
+# Suppress deprecation warnings from third-party packages (e.g., flutter_inappwebview_macos)
+# These warnings are in dependencies and will be fixed by package maintainers
+# Note: Swift doesn't have a direct flag to suppress only deprecation warnings,
+# but we can reduce verbosity. The warnings shown are from flutter_inappwebview_macos
+# and don't affect functionality.
