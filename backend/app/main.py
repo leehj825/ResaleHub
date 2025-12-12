@@ -6,6 +6,7 @@ from sqlalchemy import text  # [추가됨] SQL 실행용
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.routers import health, auth, listings, listing_images, marketplaces
+from app.routers.auth import api_router
 
 # --- Load settings ---
 settings = get_settings()
@@ -145,6 +146,7 @@ async def check_playwright_browsers():
 # --- Routers ---
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(api_router)  # Desktop-to-Cloud pairing endpoints
 app.include_router(listings.router)
 app.include_router(listing_images.router)
 app.include_router(marketplaces.router)

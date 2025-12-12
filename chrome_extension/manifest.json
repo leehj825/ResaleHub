@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "ResaleHub Poshmark Connector",
+  "version": "1.0.0",
+  "description": "Sync Poshmark cookies to ResaleHub for desktop-to-cloud authentication",
+  "permissions": [
+    "cookies",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://poshmark.com/*",
+    "https://*.poshmark.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
+

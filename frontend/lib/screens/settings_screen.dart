@@ -8,7 +8,8 @@ import '../services/marketplace_service.dart';
 import '../services/auth_service.dart';
 import 'ebay_inventory_screen.dart';
 import 'poshmark_inventory_screen.dart';
-import 'poshmark_webview_screen.dart'; // [NEW] 새로 만든 WebView 화면 임포트
+import 'poshmark_webview_screen.dart';
+import 'desktop_connection_screen.dart'; // Desktop-to-Cloud pairing flow
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -256,6 +257,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // Desktop-to-Cloud pairing flow
+  Future<void> _connectPoshmarkDesktop() async {
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => const DesktopConnectionScreen(),
+      ),
+    );
+
+    if (result == true && mounted) {
+      // Connection successful, refresh status
+      await _loadStatus();
+    }
+  }
+
   Future<void> _testEbayApi() async {
     try {
       final baseUrl = _auth.baseUrl;
@@ -381,15 +396,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             
             Row(
               children: [
-                if (!_poshmarkConnected)
+                if (!_poshmarkConnected) ...[
                   ElevatedButton(
                     onPressed: _connectPoshmark,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFE31837), // Poshmark brand color
                       foregroundColor: Colors.white,
                     ),
-                    child: const Text('Connect Poshmark'),
+                    child: const Text('Connect Poshmark (Browser)'),
                   ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _connectPoshmarkDesktop,
+                    icon: const Icon(Icons.desktop_windows),
+                    label: const Text('Desktop Extension'),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFFE31837)),
+                    ),
+                  ),
+                ],
                 if (_poshmarkConnected) ...[
                   OutlinedButton(
                     onPressed: _disconnectPoshmark,
