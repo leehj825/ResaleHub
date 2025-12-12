@@ -561,10 +561,20 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
         <hr/>
         <h4>Notes</h4>
         <ul>
-            <li>The bookmarklet must be executed while you are on a poshmark.com page (after signing in).</li>
+            <li>The bookmarklet must be executed while you are on a <b>poshmark.com</b> page (after signing in).</li>
             <li>When executed, it will open this connect page and send your cookies here securely via <code>postMessage</code>.</li>
+            <li>If cookies don't appear automatically, check the browser console (F12) for errors, or use the "Copy Cookies from Console" button below.</li>
             <li>We recommend deleting the bookmarklet after use if you are on a shared machine.</li>
         </ul>
+        
+        <h4>Troubleshooting</h4>
+        <p>If the bookmarklet doesn't work:</p>
+        <ol>
+            <li>Make sure you're logged into poshmark.com</li>
+            <li>Open browser console (F12) and run: <code>document.cookie</code></li>
+            <li>Copy the output and paste it in the textarea above</li>
+            <li>Click "Submit Cookies"</li>
+        </ol>
 
         <script>
             // Build the bookmarklet code (user can copy or drag the link)
@@ -572,7 +582,7 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
                 const connectUrl = '{submit_url}';
                 // Fixed bookmarklet: properly escape quotes and handle postMessage
                 // Note: Using double braces {{}} in Python string so they output as single braces {{}} in HTML/JS
-                const bm = "javascript:(function(){{var url='"+connectUrl+"';var w=window.open(url,'_blank');if(!w){{alert('Popup blocked! Please allow popups for this site.');return;}}var cookies=document.cookie;var attempts=0;var maxAttempts=50;var i=setInterval(function(){{try{{if(w.closed){{clearInterval(i);return;}}w.postMessage({{type:'poshmark_cookies',cookies:cookies}},'*');attempts++;if(attempts>=maxAttempts){{clearInterval(i);}}}}catch(e){{console.error('postMessage error:',e);}}}},300);setTimeout(function(){{clearInterval(i);}},15000);}})();";
+                const bm = "javascript:(function(){{var url='"+connectUrl+"';var cookies=document.cookie;if(!cookies||cookies.length===0){{alert('No cookies found. Please make sure you are logged into poshmark.com');return;}}var w=window.open(url,'_blank');if(!w){{alert('Popup blocked! Please allow popups for this site.');return;}}var attempts=0;var maxAttempts=150;var sent=false;var checkReady=function(){{try{{if(w.closed){{clearInterval(i);return;}}if(w.document&&w.document.readyState==='complete'){{if(!sent){{try{{w.postMessage({{type:'poshmark_cookies',cookies:cookies}},'*');sent=true;console.log('Cookies sent successfully!');setTimeout(function(){{if(!w.closed){{w.focus();}}}},500);}}catch(e){{console.error('postMessage failed:',e);}}}}}}attempts++;if(attempts>=maxAttempts){{clearInterval(i);if(!sent){{alert('Failed to send cookies automatically. The connect page should be open - please paste cookies manually or check the console for errors.');w.focus();}}}}}}catch(e){{if(attempts<5){{console.log('Waiting for window to be ready...');}}else if(attempts>=10){{console.error('Error:',e);clearInterval(i);alert('Error: '+e.message);}}}}}};var i=setInterval(checkReady,200);setTimeout(function(){{clearInterval(i);if(!sent){{alert('Timeout waiting for connect page. Please paste cookies manually.');w.focus();}}}},30000);}})();";
                 const bmCodeEl = document.getElementById('bmCode');
                 const bmLink = document.getElementById('bmLink');
                 if (bmCodeEl) bmCodeEl.value = bm;
@@ -585,23 +595,60 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
             // Listen for cookie messages from bookmarklet (postMessage)
             window.addEventListener('message', function(ev) {{
                 try {{
+                    console.log('Received message:', ev.data);
                     const data = ev.data || {{}};
                     if (data.type && data.type === 'poshmark_cookies' && data.cookies) {{
+                        console.log('Processing cookies, length:', data.cookies.length);
                         const textarea = document.getElementById('cookieString');
                         if (textarea) {{
                             textarea.value = data.cookies;
+                            // Show success message
+                            const successMsg = document.createElement('div');
+                            successMsg.style.cssText = 'background:#4CAF50;color:white;padding:8px;margin:8px 0;border-radius:4px;';
+                            successMsg.textContent = '✓ Cookies received! ' + (data.cookies.length > 100 ? data.cookies.substring(0,100)+'...' : data.cookies);
+                            const form = document.getElementById('cookieForm');
+                            if (form && form.parentNode) {{
+                                form.parentNode.insertBefore(successMsg, form);
+                                setTimeout(function(){{successMsg.remove();}},5000);
+                            }}
                             // Optionally auto-submit
                             const auto = document.getElementById('autoSubmit');
-                            const form = document.getElementById('cookieForm');
                             if (auto && auto.checked && form) {{
-                                form.submit();
+                                setTimeout(function(){{form.submit();}},500);
                             }}
+                        }} else {{
+                            console.error('Textarea not found');
                         }}
+                    }} else {{
+                        console.log('Message ignored - wrong type or missing cookies');
                     }}
                 }} catch (e) {{
                     console.error('Error handling postMessage:', e);
+                    alert('Error processing cookies: ' + e.message);
                 }}
             }}, false);
+            
+            // Add a manual copy button as fallback
+            window.addEventListener('load', function() {{
+                const form = document.getElementById('cookieForm');
+                if (form) {{
+                    const copyBtn = document.createElement('button');
+                    copyBtn.type = 'button';
+                    copyBtn.textContent = 'Copy Cookies from Console';
+                    copyBtn.style.cssText = 'margin:8px 0;padding:8px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;';
+                    copyBtn.onclick = function() {{
+                        const textarea = document.getElementById('cookieString');
+                        if (textarea) {{
+                            const promptText = 'Paste your cookies here (from browser console: document.cookie):';
+                            const cookies = prompt(promptText);
+                            if (cookies) {{
+                                textarea.value = cookies;
+                            }}
+                        }}
+                    }};
+                    form.parentNode.insertBefore(copyBtn, form);
+                }}
+            }});
         </script>
     </body>
 </html>
