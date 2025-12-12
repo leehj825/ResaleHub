@@ -39,17 +39,14 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
     
-    # Suppress deprecation warnings from flutter_inappwebview_macos
-    # These are from the third-party package and will be fixed by the maintainers
+    # Suppress all warnings from flutter_inappwebview_macos to remove red warning lines
     if target.name == 'flutter_inappwebview_macos'
       target.build_configurations.each do |config|
-        config.build_settings['SWIFT_SUPPRESS_WARNINGS'] = 'NO'
+        config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+        config.build_settings['SWIFT_SUPPRESS_WARNINGS'] = 'YES'
         config.build_settings['OTHER_SWIFT_FLAGS'] ||= ['$(inherited)']
-        # Suppress deprecation warnings specifically
-        config.build_settings['OTHER_SWIFT_FLAGS'] << '-Xfrontend'
-        config.build_settings['OTHER_SWIFT_FLAGS'] << '-warn-long-function-bodies=100'
-        config.build_settings['OTHER_SWIFT_FLAGS'] << '-Xfrontend'
-        config.build_settings['OTHER_SWIFT_FLAGS'] << '-warn-long-expression-type-checking=100'
+        config.build_settings['OTHER_SWIFT_FLAGS'] << '-suppress-warnings'
+        config.build_settings['WARNING_CFLAGS'] = '-Wno-everything'
       end
     end
   end
