@@ -146,6 +146,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       // Show a progress dialog while we poll the backend for connection status
       bool cancelled = false;
+      bool dialogOpen = true;
+      
       showDialog<void>(
         context: context,
         barrierDismissible: false,
@@ -167,6 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 TextButton(
                   onPressed: () {
                     cancelled = true;
+                    dialogOpen = false;
                     Navigator.of(dialogCtx).pop();
                   },
                   child: const Text('Cancel'),
@@ -180,41 +183,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Poll for up to 2 minutes
       final deadline = DateTime.now().add(const Duration(minutes: 2));
       bool connected = false;
-      while (DateTime.now().isBefore(deadline) && !cancelled && !connected) {
+      
+      while (DateTime.now().isBefore(deadline) && !cancelled && !connected && mounted) {
         await Future.delayed(const Duration(seconds: 2));
+        if (cancelled) break;
+        
         try {
           connected = await _marketplaceService.isPoshmarkConnected();
+          if (connected) break;
         } catch (e) {
-          // ignore transient errors
+          // ignore transient errors during polling
+          debugPrint('Polling error (ignored): $e');
         }
-        if (connected) break;
       }
 
       // Close dialog if still open
-      if (mounted) {
+      if (mounted && dialogOpen) {
         try {
           Navigator.of(context, rootNavigator: true).pop();
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('Error closing dialog: $e');
+        }
       }
 
+      if (!mounted) return;
+
+      // Show appropriate message
       if (connected) {
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Poshmark connected!')),
         );
       } else if (cancelled) {
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Connection cancelled')),
         );
+        // Don't reload status if cancelled - just return
+        return;
       } else {
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Timed out while waiting for Poshmark connection')),
         );
       }
 
-      if (mounted) {
+      // Only reload status if not cancelled
+      if (!cancelled && mounted) {
         await _loadStatus();
       }
     } catch (e) {

@@ -568,33 +568,40 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
 
         <script>
             // Build the bookmarklet code (user can copy or drag the link)
-            (function(){
+            (function(){{
                 const connectUrl = '{submit_url}';
-                const bm = "javascript:(function(){var url='"+connectUrl+"';var w=window.open(url,'_blank');var cookies=document.cookie;var i=setInterval(function(){try{w.postMessage({{type:'poshmark_cookies',cookies:cookies}},'*')}catch(e){}},300);setTimeout(function(){clearInterval(i)},15000);})();";
+                // Fixed bookmarklet: properly escape quotes and handle postMessage
+                // Note: Using double braces {{}} in Python string so they output as single braces {{}} in HTML/JS
+                const bm = "javascript:(function(){{var url='"+connectUrl+"';var w=window.open(url,'_blank');if(!w){{alert('Popup blocked! Please allow popups for this site.');return;}}var cookies=document.cookie;var attempts=0;var maxAttempts=50;var i=setInterval(function(){{try{{if(w.closed){{clearInterval(i);return;}}w.postMessage({{type:'poshmark_cookies',cookies:cookies}},'*');attempts++;if(attempts>=maxAttempts){{clearInterval(i);}}}}catch(e){{console.error('postMessage error:',e);}}}},300);setTimeout(function(){{clearInterval(i);}},15000);}})();";
                 const bmCodeEl = document.getElementById('bmCode');
                 const bmLink = document.getElementById('bmLink');
-                bmCodeEl.value = bm;
-                bmLink.setAttribute('href', bm);
-                bmLink.setAttribute('title', 'Drag this to your bookmarks bar or click while on poshmark.com');
-            })();
+                if (bmCodeEl) bmCodeEl.value = bm;
+                if (bmLink) {{
+                    bmLink.setAttribute('href', bm);
+                    bmLink.setAttribute('title', 'Drag this to your bookmarks bar or click while on poshmark.com');
+                }}
+            }})();
 
             // Listen for cookie messages from bookmarklet (postMessage)
-            window.addEventListener('message', function(ev) {
-                try {
-                    const data = ev.data || {};
-                    if (data.type && data.type === 'poshmark_cookies' && data.cookies) {
+            window.addEventListener('message', function(ev) {{
+                try {{
+                    const data = ev.data || {{}};
+                    if (data.type && data.type === 'poshmark_cookies' && data.cookies) {{
                         const textarea = document.getElementById('cookieString');
-                        textarea.value = data.cookies;
-                        // Optionally auto-submit
-                        const auto = document.getElementById('autoSubmit');
-                        if (auto && auto.checked) {
-                            document.getElementById('cookieForm').submit();
-                        }
-                    }
-                } catch (e) {
-                    // ignore
-                }
-            }, false);
+                        if (textarea) {{
+                            textarea.value = data.cookies;
+                            // Optionally auto-submit
+                            const auto = document.getElementById('autoSubmit');
+                            const form = document.getElementById('cookieForm');
+                            if (auto && auto.checked && form) {{
+                                form.submit();
+                            }}
+                        }}
+                    }}
+                }} catch (e) {{
+                    console.error('Error handling postMessage:', e);
+                }}
+            }}, false);
         </script>
     </body>
 </html>
