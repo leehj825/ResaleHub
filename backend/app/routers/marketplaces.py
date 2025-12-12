@@ -8,10 +8,11 @@ import re
 import json
 import traceback # 에러 디버깅용
 from datetime import datetime, timedelta
+import secrets
 
 import httpx
 # [FIX] Body 임포트 추가
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -23,13 +24,16 @@ from app.models.listing import Listing
 from app.models.listing_image import ListingImage
 from app.models.listing_marketplace import ListingMarketplace
 from app.models.marketplace_account import MarketplaceAccount
+from app.models.connect_token import ConnectToken
 
 from app.services.ebay_client import ebay_get, ebay_post, ebay_put, ebay_delete, EbayAuthError
 from app.services.poshmark_client import (
     publish_listing as poshmark_publish_listing,
     PoshmarkAuthError,
     PoshmarkPublishError,
+    verify_poshmark_cookie,
 )
+import logging
 
 router = APIRouter(
     prefix="/marketplaces",
@@ -496,16 +500,223 @@ def ebay_status(db: Session = Depends(get_db), current_user: User = Depends(get_
     return {"connected": account is not None and account.access_token is not None, "marketplace": "ebay"}
 
 @router.get("/poshmark/connect")
-def poshmark_connect(request: Request, current_user: User = Depends(get_current_user)):
+def poshmark_connect(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Create a short-lived connect token and return a connect URL containing the token.
+    The token is valid for a short window (10 minutes) and used by the system-browser flow.
+    """
     base_url = str(request.base_url).rstrip('/')
-    return {"connect_url": f"{base_url}/marketplaces/poshmark/connect/form?state={current_user.id}"}
+    # create secure token
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    ct = ConnectToken(token=token, user_id=current_user.id, expires_at=expires_at)
+    db.add(ct)
+    db.commit()
+    return {"connect_url": f"{base_url}/marketplaces/poshmark/connect/form?token={token}"}
 
 @router.get("/poshmark/connect/form")
-def poshmark_connect_form(request: Request, state: str, db: Session = Depends(get_db)):
-    try: user = db.query(User).filter(User.id == int(state)).first()
-    except: return HTMLResponse(content="Invalid request", status_code=400)
-    if not user: return HTMLResponse(content="User not found", status_code=404)
-    return HTMLResponse(content=f"""<html><body><h2>Poshmark Connect</h2><p>Please use the App to connect.</p></body></html>""")
+def poshmark_connect_form(request: Request, token: str, db: Session = Depends(get_db)):
+    # Validate token and map to user
+    try:
+        token_row = db.query(ConnectToken).filter(ConnectToken.token == token, ConnectToken.expires_at > datetime.utcnow()).first()
+    except Exception:
+        return HTMLResponse(content="Invalid request", status_code=400)
+    if not token_row:
+        return HTMLResponse(content="Invalid or expired token", status_code=400)
+    user = db.query(User).filter(User.id == token_row.user_id).first()
+    if not user:
+        return HTMLResponse(content="User not found", status_code=404)
+    # Serve a small form that lets a user paste cookies (from document.cookie)
+    # and submit them back to the server. This allows a fast "system browser"
+    # flow where the browser posts cookies back to the app without running Playwright.
+    base_url = str(request.base_url).rstrip('/')
+    submit_url = f"{base_url}/marketplaces/poshmark/connect/cookies_form"
+        return HTMLResponse(content=f"""
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Poshmark Connect</title>
+        <style>body{{font-family: Arial, sans-serif;max-width:900px;margin:28px;}}textarea{{width:100%;height:140px}}code{{background:#f3f3f3;padding:2px 4px;border-radius:3px}}</style>
+    </head>
+    <body>
+        <h2>Poshmark Connect — One-Click Helper</h2>
+        <p>Best flow: sign in to <b>poshmark.com</b> in your browser, then run the small bookmarklet below while on <b>poshmark.com</b>. The bookmarklet will copy your session cookies and open this connect page, which will receive the cookies automatically.</p>
+
+        <h3>1) Drag this link to your bookmarks bar (one-time)</h3>
+        <p>
+            <a id="bmLink" href="#">Copy Poshmark Cookies &amp; Open Connect</a>
+        </p>
+
+        <h3>2) Or copy this Bookmarklet JS manually</h3>
+        <p>Open your bookmarks manager and create a new bookmark with the following URL as its address:</p>
+        <textarea id="bmCode" readonly></textarea>
+
+        <hr/>
+        <h3>3) When ready, paste or receive cookies below</h3>
+        <form id="cookieForm" method="post" action="{submit_url}">
+            <input type="hidden" name="token" value="{token}" />
+            <label for="cookieString">Cookie string (or JSON array):</label>
+            <textarea id="cookieString" name="cookie_string" placeholder="sessionid=...; un=...; ..."></textarea>
+            <div style="margin-top:12px">
+                <label><input type="checkbox" id="autoSubmit" /> Auto-submit when cookies received</label>
+                <div style="margin-top:8px"><button type="submit">Submit Cookies</button></div>
+            </div>
+        </form>
+
+        <hr/>
+        <h4>Notes</h4>
+        <ul>
+            <li>The bookmarklet must be executed while you are on a poshmark.com page (after signing in).</li>
+            <li>When executed, it will open this connect page and send your cookies here securely via <code>postMessage</code>.</li>
+            <li>We recommend deleting the bookmarklet after use if you are on a shared machine.</li>
+        </ul>
+
+        <script>
+            // Build the bookmarklet code (user can copy or drag the link)
+            (function(){
+                const connectUrl = '{submit_url}';
+                const bm = "javascript:(function(){var url='"+connectUrl+"';var w=window.open(url,'_blank');var cookies=document.cookie;var i=setInterval(function(){try{w.postMessage({{type:'poshmark_cookies',cookies:cookies}},'*')}catch(e){}},300);setTimeout(function(){clearInterval(i)},15000);})();";
+                const bmCodeEl = document.getElementById('bmCode');
+                const bmLink = document.getElementById('bmLink');
+                bmCodeEl.value = bm;
+                bmLink.setAttribute('href', bm);
+                bmLink.setAttribute('title', 'Drag this to your bookmarks bar or click while on poshmark.com');
+            })();
+
+            // Listen for cookie messages from bookmarklet (postMessage)
+            window.addEventListener('message', function(ev) {
+                try {
+                    const data = ev.data || {};
+                    if (data.type && data.type === 'poshmark_cookies' && data.cookies) {
+                        const textarea = document.getElementById('cookieString');
+                        textarea.value = data.cookies;
+                        // Optionally auto-submit
+                        const auto = document.getElementById('autoSubmit');
+                        if (auto && auto.checked) {
+                            document.getElementById('cookieForm').submit();
+                        }
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }, false);
+        </script>
+    </body>
+</html>
+""")
+
+
+@router.post("/poshmark/connect/cookies_form")
+def connect_poshmark_cookies_form(
+    token: str = Form(...),
+    cookie_string: str = Form(...),
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
+    # Validate and consume token
+    try:
+        token_row = db.query(ConnectToken).filter(ConnectToken.token == token, ConnectToken.expires_at > datetime.utcnow()).first()
+    except Exception:
+        return HTMLResponse(content="Invalid token", status_code=400)
+    if not token_row:
+        return HTMLResponse(content="Invalid or expired token", status_code=400)
+
+    user = db.query(User).filter(User.id == token_row.user_id).first()
+    if not user:
+        return HTMLResponse(content="User not found", status_code=404)
+
+    # consume the token so it cannot be reused
+    try:
+        db.delete(token_row)
+        db.commit()
+    except Exception:
+        db.rollback()
+    try:
+        user = db.query(User).filter(User.id == int(state)).first()
+    except Exception:
+        return HTMLResponse(content="Invalid state", status_code=400)
+    if not user:
+        return HTMLResponse(content="User not found", status_code=404)
+
+    # Try JSON first, then fallback to name=value;name2=value2 parsing
+    cookies = []
+    cookie_string = (cookie_string or "").strip()
+    try:
+        if cookie_string.startswith('['):
+            cookies = json.loads(cookie_string)
+        elif cookie_string.startswith('{'):
+            # single object -> convert to array
+            obj = json.loads(cookie_string)
+            if isinstance(obj, dict):
+                cookies = [obj]
+        else:
+            # parse document.cookie like string: k1=v1; k2=v2
+            parts = cookie_string.split(';')
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                if '=' in p:
+                    name, value = p.split('=', 1)
+                    cookies.append({"name": name.strip(), "value": value.strip()})
+    except Exception as e:
+        return HTMLResponse(content=f"Failed to parse cookies: {e}", status_code=400)
+
+    # Save to DB (reuse logic similar to cookie-based API)
+    try:
+        username = "Connected Account"
+        try:
+            for c in cookies:
+                if c.get('name') == 'un' or c.get('name') == 'username':
+                    username = c.get('value')
+                    break
+        except Exception:
+            pass
+
+        cookies_json = json.dumps(cookies)
+
+        account = db.query(MarketplaceAccount).filter(
+            MarketplaceAccount.user_id == user.id,
+            MarketplaceAccount.marketplace == "poshmark"
+        ).first()
+
+        if account:
+            account.username = username
+            account.access_token = cookies_json
+        else:
+            new_account = MarketplaceAccount(
+                user_id=user.id,
+                marketplace="poshmark",
+                username=username,
+                access_token=cookies_json,
+            )
+            db.add(new_account)
+
+        db.commit()
+
+        # Schedule background verification (non-blocking)
+        try:
+            if background_tasks is not None:
+                async def _verify(cookie_json: str, uid: int):
+                    logger = logging.getLogger("resalehub.poshmark")
+                    try:
+                        cookies = json.loads(cookie_json)
+                        cookie_header = "; ".join([f"{c.get('name')}={c.get('value')}" for c in cookies if c.get('name')])
+                        res = await verify_poshmark_cookie(cookie_header)
+                        logger.info("poshmark: cookie verification succeeded for user %s -> %s", uid, res)
+                    except Exception as e:
+                        logger.exception("poshmark: cookie verification failed for user %s: %s", uid, e)
+
+                background_tasks.add_task(_verify, cookies_json, user.id)
+        except Exception:
+            # verification is best-effort; don't fail the user's flow
+            pass
+
+        return HTMLResponse(content=f"<html><body><h3>Poshmark cookies saved for user {user.email}</h3><p>Verification queued. You may close this window.</p></body></html>")
+    except Exception as e:
+        db.rollback()
+        traceback.print_exc()
+        return HTMLResponse(content=f"Server error saving cookies: {e}", status_code=500)
 
 # ---------------------------------------------------------
 # [FIX] Poshmark Cookie-Based Connection (Fixed)

@@ -73,6 +73,23 @@ The frontend's API base URL is currently set in `frontend/lib/services/auth_serv
 
 ---
 
+## Poshmark Connect — System Browser Bookmarklet (Quick Guide)
+
+Use the system-browser connect flow to avoid WebView-related bot detection. The backend exposes a small bookmarklet helper that copies `document.cookie` on poshmark.com and posts it to the connect page.
+
+1. In the app `Settings` screen, tap **Connect Poshmark**. The app opens a system browser to a short-lived connect URL (valid ~10 minutes).
+2. Sign in to poshmark.com in that browser tab.
+3. Open the bookmarklet (drag the provided 'Copy Poshmark Cookies & Open Connect' link to your bookmarks bar while on the connect page or copy the JS from the textarea and create a bookmark manually). Then, while on a signed-in poshmark.com page, click the bookmarklet. It will open the connect page and automatically send cookies via `postMessage`.
+4. Back in the app, the Settings screen will poll the backend for connection status and notify you when the account is connected.
+
+Security notes:
+- The connect URL contains a short-lived token (not your user id). The token expires in 10 minutes and is consumed on use.
+- Only run the bookmarklet on your own device and do not store the bookmarklet on shared machines.
+- If you prefer a more locked-down flow, we can add one-time nonce verification and require HTTPS-only origins for the connect page.
+
+
+---
+
 ## Render.com (deployment notes)
 
 If you use Playwright in production (usually not required), install browsers during build. Example Build & Start commands on Render:

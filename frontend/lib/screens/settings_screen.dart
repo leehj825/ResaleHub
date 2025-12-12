@@ -134,16 +134,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // [UPDATED] Poshmark 연결
   Future<void> _connectPoshmark() async {
-    // 앱 내 WebView 화면으로 이동
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PoshmarkWebViewScreen()),
-    );
+    try {
+      final connectUrl = await _marketplaceService.getPoshmarkConnectUrl();
+      final uri = Uri.parse(connectUrl);
 
-    // [FIX] 결과(result)와 상관없이 무조건 상태를 새로고침합니다.
-    // 사용자가 수동으로 뒤로가기를 눌렀어도, 로그인이 되어있을 수 있기 때문입니다.
-    if (mounted) {
-      print(">>> Returned from login screen, refreshing status...");
-      await _loadStatus();
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw Exception('Could not launch $connectUrl');
+      }
+
+      // Show a progress dialog while we poll the backend for connection status
+      bool cancelled = false;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogCtx) {
+          return WillPopScope(
+            onWillPop: () async => false,
+            child: AlertDialog(
+              title: const Text('Waiting for Poshmark connection'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  SizedBox(height: 12),
+                  CircularProgressIndicator(),
+                  SizedBox(height: 12),
+                  Text('After signing in on the browser, return here — we will detect the connection automatically.'),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    cancelled = true;
+                    Navigator.of(dialogCtx).pop();
+                  },
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+
+      // Poll for up to 2 minutes
+      final deadline = DateTime.now().add(const Duration(minutes: 2));
+      bool connected = false;
+      while (DateTime.now().isBefore(deadline) && !cancelled && !connected) {
+        await Future.delayed(const Duration(seconds: 2));
+        try {
+          connected = await _marketplaceService.isPoshmarkConnected();
+        } catch (e) {
+          // ignore transient errors
+        }
+        if (connected) break;
+      }
+
+      // Close dialog if still open
+      if (mounted) {
+        try {
+          Navigator.of(context, rootNavigator: true).pop();
+        } catch (_) {}
+      }
+
+      if (connected) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Poshmark connected!')),
+        );
+      } else if (cancelled) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Connection cancelled')),
+        );
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Timed out while waiting for Poshmark connection')),
+        );
+      }
+
+      if (mounted) {
+        await _loadStatus();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to open connect URL: $e')),
+      );
     }
   }
 

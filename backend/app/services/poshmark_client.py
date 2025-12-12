@@ -593,3 +593,42 @@ async def verify_poshmark_credentials(username: str, cookie_json: str, headless:
         else:
              print(">>> Cookie Login Failed (Expired?)")
              return False
+
+
+async def verify_poshmark_cookie(cookie_str: str) -> dict:
+    """
+    Verify a Poshmark session cookie by making a simple HTTP request using the cookie string.
+    Returns a dict with user info (e.g., username) if verification succeeds, otherwise raises PoshmarkAuthError.
+    This is a lightweight alternative to Playwright when the site can be probed via HTTP.
+    """
+    logger = logging.getLogger("resalehub.poshmark")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Cookie": cookie_str,
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get("https://poshmark.com/", headers=headers)
+        except Exception as e:
+            logger.exception("poshmark: cookie verification request failed: %s", e)
+            raise PoshmarkAuthError(f"Cookie verification request failed: {e}")
+
+    if resp.status_code != 200:
+        logger.info("poshmark: cookie check returned status %s", resp.status_code)
+        raise PoshmarkAuthError("Cookie did not produce an authenticated response")
+
+    text = resp.text or ""
+    import re
+    m = re.search(r"/user/([A-Za-z0-9_\-]+)", text)
+    if m:
+        username = m.group(1)
+        logger.info("poshmark: cookie appears valid for user %s", username)
+        return {"username": username}
+
+    if "Sign Out" in text or "Log Out" in text or "Sign out" in text:
+        logger.info("poshmark: cookie appears valid (logout link found)")
+        return {"username": None}
+
+    logger.info("poshmark: cookie verification did not find logged-in indicators")
+    raise PoshmarkAuthError("Cookie did not indicate a logged-in session")
