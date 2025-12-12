@@ -23,6 +23,10 @@ bool get isLinux {
 /// Check if running on desktop (macOS, Windows, or Linux, but not web)
 bool get isDesktop {
   if (kIsWeb) return false;
-  return isMacOS || isWindows || isLinux;
+  // Directly check platform to avoid getter recursion
+  final platform = defaultTargetPlatform;
+  return platform == TargetPlatform.macOS ||
+      platform == TargetPlatform.windows ||
+      platform == TargetPlatform.linux;
 }
 

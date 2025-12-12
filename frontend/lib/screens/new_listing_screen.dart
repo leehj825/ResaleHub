@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/listing.dart';
 import '../services/listing_service.dart';
+import '../widgets/platform_image_widget.dart';
 
 class NewListingScreen extends StatefulWidget {
   const NewListingScreen({super.key});
@@ -225,8 +226,8 @@ class _NewListingScreenState extends State<NewListingScreen> {
                       padding: const EdgeInsets.only(right: 8.0),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(8),
-                        child: Image.file(
-                          _selectedImages[index],
+                        child: PlatformImageWidget(
+                          file: _selectedImages[index],
                           width: 80,
                           height: 80,
                           fit: BoxFit.cover,

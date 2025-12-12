@@ -11,7 +11,7 @@ class ListingImage(Base):
     id = Column(Integer, primary_key=True, index=True)
     listing_id = Column(Integer, ForeignKey("listings.id", ondelete="CASCADE"), index=True, nullable=False)
 
-    file_path = Column(String(500), nullable=False)  # 실제 파일 경로 (예: "media/listings/1/abc.jpg")
+    file_path = Column(String(500), nullable=False)  # 실제 파일 경로 (예: "listings/1/abc.jpg" - media/ prefix 없음)
     sort_order = Column(Integer, nullable=False, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
