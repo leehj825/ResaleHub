@@ -321,7 +321,7 @@ async def publish_to_ebay(listing_id: int, request: Request, db: Session = Depen
     listing_images = db.query(ListingImage).filter(ListingImage.listing_id == listing_id).order_by(ListingImage.sort_order.asc()).all()
     base_url = str(request.base_url).rstrip('/')
     for img in listing_images:
-        full_url = f"{base_url}{settings.media_url}/{img.file_path}"
+    return HTMLResponse(content=f"""
         if full_url.startswith("http") and "127.0.0.1" not in full_url and "localhost" not in full_url: image_urls.append(full_url)
     if not image_urls:
         raw_images = getattr(listing, "image_urls", []) or []
@@ -531,7 +531,7 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
     # flow where the browser posts cookies back to the app without running Playwright.
     base_url = str(request.base_url).rstrip('/')
     submit_url = f"{base_url}/marketplaces/poshmark/connect/cookies_form"
-        return HTMLResponse(content=f"""
+    return HTMLResponse(content=f"""
 <html>
     <head>
         <meta charset="utf-8" />
@@ -631,12 +631,6 @@ def connect_poshmark_cookies_form(
         db.commit()
     except Exception:
         db.rollback()
-    try:
-        user = db.query(User).filter(User.id == int(state)).first()
-    except Exception:
-        return HTMLResponse(content="Invalid state", status_code=400)
-    if not user:
-        return HTMLResponse(content="User not found", status_code=404)
 
     # Try JSON first, then fallback to name=value;name2=value2 parsing
     cookies = []
