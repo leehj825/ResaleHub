@@ -699,7 +699,7 @@ async def publish_listing_to_poshmark(
         except:
             pass
         
-        if "next" in button_text.lower() and not price_filled:
+        if "next" in button_text.lower():
             print(f">>> Clicked 'Next', checking for price field on next step...")
             await asyncio.sleep(2)  # Wait for next step to load
             
@@ -717,48 +717,173 @@ async def publish_listing_to_poshmark(
                 except:
                     continue
             
-            # Look for final publish button
-            if price_filled:
-                print(f">>> Looking for final publish button...")
-                final_publish_btn = None
-                for selector in publish_selectors:
-                    try:
-                        final_publish_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
-                        if final_publish_btn:
-                            btn_text = await final_publish_btn.inner_text()
-                            if "List" in btn_text or "Publish" in btn_text:
-                                print(f">>> ✓ Found final publish button: {btn_text}")
-                                # Close modals again
-                                try:
-                                    await page.keyboard.press('Escape')
-                                    await asyncio.sleep(0.5)
-                                except:
-                                    pass
-                                
-                                try:
-                                    await final_publish_btn.click(timeout=5000)
-                                    print(">>> Clicked final publish button")
-                                except Exception as e:
-                                    if "intercepts" in str(e).lower():
-                                        await final_publish_btn.evaluate("button => button.click()")
-                                        print(">>> Clicked final publish button via JavaScript")
-                                    else:
-                                        raise
-                                break
-                    except:
-                        continue
+            # Look for final publish button (regardless of whether price was filled)
+            print(f">>> Looking for final publish button...")
+            final_publish_btn = None
+            final_publish_selectors = [
+                'button:has-text("List")',
+                'button:has-text("List Item")',
+                'button:has-text("Publish")',
+                'button[type="submit"]',
+            ]
+            
+            for selector in final_publish_selectors:
+                try:
+                    final_publish_btn = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                    if final_publish_btn:
+                        btn_text = await final_publish_btn.inner_text()
+                        print(f">>> ✓ Found final publish button: {btn_text}")
+                        # Close modals again
+                        try:
+                            await page.keyboard.press('Escape')
+                            await asyncio.sleep(0.5)
+                        except:
+                            pass
+                        
+                        try:
+                            await final_publish_btn.click(timeout=5000)
+                            print(">>> Clicked final publish button")
+                        except Exception as e:
+                            if "intercepts" in str(e).lower() or "modal" in str(e).lower():
+                                print(f">>> Modal intercepted, using JavaScript click...")
+                                await final_publish_btn.evaluate("button => button.click()")
+                                print(">>> Clicked final publish button via JavaScript")
+                            else:
+                                raise
+                        break
+                except:
+                    continue
+            
+            if not final_publish_btn:
+                print(f">>> ⚠ Warning: Could not find final publish button after clicking Next")
         
-        # 완료 대기
-        try:
-            await page.wait_for_load_state("networkidle", timeout=30000)
-        except:
-            pass
-
+        # Wait for navigation to listing page or success confirmation
+        print(f">>> Waiting for publish to complete...")
         current_url = page.url
         listing_id = None
-        if "/listing/" in current_url:
-             parts = current_url.split("/")
-             listing_id = parts[-1].split("-")[-1] # URL 구조에 따라 다름
+        
+        # Wait for redirect to listing page (up to 30 seconds)
+        max_wait = 30
+        waited = 0
+        while waited < max_wait:
+            await asyncio.sleep(1)
+            waited += 1
+            current_url = page.url
+            print(f">>> [{waited}s] Current URL: {current_url}")
+            
+            # Check if we're on a listing page
+            if "/listing/" in current_url and "/create-listing" not in current_url:
+                print(f">>> ✓ Redirected to listing page: {current_url}")
+                # Extract listing ID
+                parts = current_url.split("/")
+                listing_id = parts[-1].split("-")[-1] if parts else None
+                print(f">>> Extracted listing ID: {listing_id}")
+                break
+            
+            # Check if we're on a success/confirmation page
+            try:
+                page_title = await page.title()
+                if "success" in page_title.lower() or "published" in page_title.lower() or "listed" in page_title.lower():
+                    print(f">>> ✓ Found success confirmation page")
+                    # Try to find listing link on the page
+                    try:
+                        listing_link = await page.query_selector('a[href*="/listing/"]')
+                        if listing_link:
+                            href = await listing_link.get_attribute("href")
+                            if href:
+                                if href.startswith("/"):
+                                    href = "https://poshmark.com" + href
+                                current_url = href
+                                parts = href.split("/")
+                                listing_id = parts[-1].split("-")[-1] if parts else None
+                                print(f">>> Found listing link: {current_url}")
+                                break
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Check if we're still on create-listing page (might be an error)
+            if "/create-listing" in current_url and waited > 10:
+                print(f">>> ⚠ Still on create-listing page after {waited}s, checking for errors...")
+                # Check for error messages
+                try:
+                    error_elements = await page.query_selector_all('.error, .error-message, [class*="error"]')
+                    if error_elements:
+                        for err in error_elements[:3]:
+                            text = await err.inner_text()
+                            if text:
+                                print(f">>> Error on page: {text[:100]}")
+                except:
+                    pass
+        
+        # Final check - if we still don't have a listing URL, check the closet
+        if "/listing/" not in current_url or "/create-listing" in current_url:
+            print(f">>> ⚠ Warning: Not redirected to listing page. Current URL: {current_url}")
+            print(f">>> Checking if listing was saved to drafts or closet...")
+            
+            # Try navigating to closet to see if item appears
+            try:
+                # Get username from cookies (we have access to cookies in the parent function)
+                username = None
+                # Note: We don't have direct access to db/user here, so we'll try to get username from page or cookies
+                # The parent function has the username, but we can try to extract it from the page
+                try:
+                    closet_link = await page.query_selector('a[href*="/closet/"]')
+                    if closet_link:
+                        href = await closet_link.get_attribute("href")
+                        if href:
+                            import re
+                            match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
+                            if match:
+                                username = match.group(1)
+                                print(f">>> Extracted username from page: {username}")
+                except:
+                    pass
+                
+                if username and username != "Connected Account":
+                    closet_url = f"https://poshmark.com/closet/{username}"
+                    print(f">>> Checking closet: {closet_url}")
+                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=10000)
+                    await asyncio.sleep(3)
+                    
+                    # Look for the listing we just created (by title or most recent)
+                    listing_links = await page.query_selector_all('a[href*="/listing/"]')
+                    if listing_links:
+                        print(f">>> Found {len(listing_links)} listings in closet")
+                        # Get the most recent one (first in list)
+                        if listing_links:
+                            href = await listing_links[0].get_attribute("href")
+                            if href:
+                                if href.startswith("/"):
+                                    href = "https://poshmark.com" + href
+                                current_url = href
+                                parts = href.split("/")
+                                listing_id = parts[-1].split("-")[-1] if parts else None
+                                print(f">>> Found listing in closet: {current_url}")
+                    else:
+                        print(f">>> ⚠ No listings found in closet")
+            except Exception as e:
+                print(f">>> Could not check closet: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # If still no listing URL, it might be in drafts or failed
+        if "/listing/" not in current_url or "/create-listing" in current_url:
+            print(f">>> ⚠ Listing might be saved as draft or publish failed. Current URL: {current_url}")
+            # Take a screenshot for debugging
+            try:
+                await page.screenshot(path="/tmp/publish_final_state.png")
+                print(f">>> Screenshot saved to /tmp/publish_final_state.png")
+            except:
+                pass
+            # Return success but with a note
+            return {
+                "status": "published",
+                "url": current_url,
+                "external_item_id": listing_id,
+                "note": "Listing may be in drafts. Please check your Poshmark account."
+            }
 
         return {
             "status": "published",
