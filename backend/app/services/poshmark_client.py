@@ -439,22 +439,34 @@ async def publish_listing(
 ) -> dict:
     """
     Poshmark에 리스팅 업로드 (메인 함수)
+    - 쿠키 기반 인증 사용
     - 최적화된 브라우저 실행
-    - 세션(쿠키) 재사용 적용
     """
-    username, password = await get_poshmark_credentials(db, user)
+    import sys
+    import time
+    start_time = time.time()
     
-    # 세션 파일 경로 설정 (유저별 분리)
-    session_file_path = f"/tmp/poshmark_session_{user.id}.json"
+    def log(msg):
+        """Log with timestamp and flush immediately"""
+        elapsed = time.time() - start_time
+        print(f">>> [PUBLISH {elapsed:.1f}s] {msg}", flush=True)
+        sys.stdout.flush()
+    
+    log("Starting Poshmark listing publish...")
+    username, cookies = await get_poshmark_cookies(db, user)
+    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)")
     
     try:
+        log("Initializing Playwright browser...")
         async with async_playwright() as p:
-            # 1. 브라우저 실행 (Render 최적화 인자 적용)
+            # 1. 브라우저 실행
             try:
+                log("Launching Chromium browser...")
                 browser = await p.chromium.launch(
                     headless=True,
                     args=get_browser_launch_args()
                 )
+                log("Browser launched")
             except Exception as e:
                 if "Executable doesn't exist" in str(e):
                     raise PoshmarkPublishError(
@@ -462,72 +474,153 @@ async def publish_listing(
                     )
                 raise
             
-            # 2. 세션 로드 시도 또는 새 컨텍스트 생성
-            context = None
-            if os.path.exists(session_file_path):
-                try:
+            # 2. Create context and load cookies
+            log("Creating browser context...")
                     context = await browser.new_context(
-                        storage_state=session_file_path,
                         viewport={"width": 1280, "height": 720},
                         user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
                     )
-                    print(f">>> Loaded existing session for user {user.id}")
-                except Exception as e:
-                    print(f">>> Failed to load session: {e}")
             
-            if not context:
-                context = await browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                )
+            # Navigate to domain first before adding cookies
+            log("Navigating to poshmark.com to set cookie domain...")
+            page_temp = await context.new_page()
+            try:
+                await page_temp.goto("https://poshmark.com", wait_until="domcontentloaded", timeout=10000)
+            except:
+                pass
+            await page_temp.close()
+            
+            # Load cookies
+            log("Loading cookies into browser context...")
+            import time as time_module
+            current_timestamp = time_module.time()
+            
+            playwright_cookies = []
+            for cookie in cookies:
+                # Skip expired cookies
+                if cookie.get("expirationDate"):
+                    expiration = cookie.get("expirationDate")
+                    if isinstance(expiration, (int, float)) and expiration < current_timestamp:
+                        continue
+                
+                # Extract domain
+                domain = cookie.get("domain", "poshmark.com")
+                if domain.startswith("."):
+                    domain = domain[1:]
+                if not domain or "poshmark.com" not in domain:
+                    domain = "poshmark.com"
+                
+                # Skip invalid cookies
+                name = cookie.get("name", "").strip()
+                value = cookie.get("value", "").strip()
+                if not name or not value:
+                    continue
+                
+                playwright_cookie = {
+                    "name": name,
+                    "value": value,
+                    "domain": domain,
+                    "path": cookie.get("path", "/"),
+                }
+                
+                if cookie.get("secure"):
+                    playwright_cookie["secure"] = True
+                if cookie.get("httpOnly"):
+                    playwright_cookie["httpOnly"] = True
+                if cookie.get("expirationDate"):
+                    exp_date = cookie.get("expirationDate")
+                    if isinstance(exp_date, (int, float)) and exp_date > current_timestamp:
+                        playwright_cookie["expires"] = int(exp_date)
+                
+                # Handle sameSite
+                same_site = cookie.get("sameSite")
+                if same_site:
+                    same_site_str = str(same_site).strip().upper()
+                    if same_site_str == "STRICT":
+                        playwright_cookie["sameSite"] = "Strict"
+                    elif same_site_str == "LAX":
+                        playwright_cookie["sameSite"] = "Lax"
+                    elif same_site_str in ["NONE", "NO_RESTRICTION", "UNSPECIFIED"]:
+                        playwright_cookie["sameSite"] = "None"
+                
+                playwright_cookies.append(playwright_cookie)
+            
+            # Final safety check: Remove invalid sameSite values
+            valid_same_site_values = {"Strict", "Lax", "None"}
+            for cookie in playwright_cookies:
+                if "sameSite" in cookie and cookie["sameSite"] not in valid_same_site_values:
+                    del cookie["sameSite"]
+            
+            await context.add_cookies(playwright_cookies)
+            log(f"Loaded {len(playwright_cookies)} cookies into browser context")
             
             page = await context.new_page()
             
-            # 3. 리소스 차단 적용 (속도 향상)
-            # 이미지 업로드에 필요한 리소스는 제외하고 차단할 수도 있으나,
-            # Playwright의 file input 조작은 네트워크 요청 없이 작동하므로 일반적으로 안전함.
-            # 단, Poshmark의 미리보기 생성 스크립트가 중요할 수 있으므로 'image'만 차단.
-            await page.route("**/*", block_resources)
+            # 3. 리소스 차단 적용 (이미지만 차단, 스크립트는 허용)
+            async def selective_block(route):
+                resource_type = route.request.resource_type
+                if resource_type in ["image", "font", "media"]:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            
+            await page.route("**/*", selective_block)
+            log("Resource blocking configured")
             
             try:
-                # 4. 로그인 상태 확인 및 로그인
-                is_logged_in = False
+                # 4. 로그인 상태 확인
+                log("Checking login status...")
+                await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(1)  # Wait for dynamic content
                 
-                # 메인 피드나 뉴스 페이지로 이동하여 로그인 여부 확인
-                try:
-                    await page.goto("https://poshmark.com/feed", timeout=10000, wait_until="domcontentloaded")
-                    # URL에 login이 없고, 유저 아이콘이나 메뉴가 보이면 로그인 된 것임
-                    if "login" not in page.url and await page.query_selector('.header-user-profile, a[href*="/user/"]'):
+                is_logged_in = False
+                page_url = page.url.lower()
+                
+                if "login" not in page_url and "sign-in" not in page_url:
+                    user_profile = await page.query_selector('.header-user-profile, a[href*="/user/"], a[href*="/closet/"]')
+                    if user_profile:
                         is_logged_in = True
-                        print(">>> Session is valid, skipping login.")
-                except:
-                    pass
+                        log("✓ Cookie authentication successful")
                 
                 if not is_logged_in:
-                    print(">>> Session invalid or missing, logging in...")
-                    login_success = await login_to_poshmark(page, username, password)
-                    if not login_success:
-                        raise PoshmarkAuthError("Login failed")
-                    
-                    # 로그인 성공 시 세션 저장
-                    await context.storage_state(path=session_file_path)
-                    print(f">>> Saved new session to {session_file_path}")
+                    log("✗ Cookie authentication failed")
+                    screenshot_base64 = None
+                    try:
+                        screenshot_bytes = await page.screenshot(full_page=True)
+                        import base64
+                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                except:
+                    pass
+                    raise PoshmarkAuthError(
+                        "Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.",
+                        screenshot_base64=screenshot_base64
+                    )
                 
                 # 5. 리스팅 업로드 수행
+                log("Starting listing upload...")
                 result = await publish_listing_to_poshmark(
                     page, listing, listing_images, base_url, settings
                 )
                 
+                log(f"✓ Publish successful! Total time: {time.time() - start_time:.1f}s")
                 return result
                 
             finally:
+                log("Closing browser...")
                 try:
                     await browser.close()
                 except:
                     pass
+    except PoshmarkAuthError:
+        log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
+        raise
     except PoshmarkPublishError:
+        log(f"✗ Publish error after {time.time() - start_time:.1f}s")
         raise
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        log(f"✗ System error after {time.time() - start_time:.1f}s: {error_details}")
         raise PoshmarkPublishError(f"System error: {str(e)}")
 
 
