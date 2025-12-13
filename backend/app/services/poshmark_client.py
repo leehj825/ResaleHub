@@ -23,7 +23,9 @@ from app.models.listing_image import ListingImage
 
 class PoshmarkAuthError(Exception):
     """Poshmark 인증 관련 에러"""
-    pass
+    def __init__(self, message: str, screenshot_base64: str = None):
+        super().__init__(message)
+        self.screenshot_base64 = screenshot_base64
 
 
 class PoshmarkPublishError(Exception):
@@ -652,6 +654,14 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     else:
                         print(f">>> DEBUG: First cookie '{first_cookie.get('name')}' has no sameSite field")
                 
+                # Navigate to domain first before adding cookies (required by Playwright)
+                page_temp = await context.new_page()
+                try:
+                    await page_temp.goto("https://poshmark.com", wait_until="domcontentloaded", timeout=10000)
+                except:
+                    pass  # Continue even if navigation fails
+                await page_temp.close()
+                
                 # Add cookies to context
                 await context.add_cookies(playwright_cookies)
                 print(f">>> Loaded {len(playwright_cookies)} valid cookies into browser context")
@@ -682,13 +692,62 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 print(f">>> Checking login status...")
                 await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
                 
-                # 로그인 여부 확인
+                # Wait a bit for dynamic content to load
+                await asyncio.sleep(2)
+                
+                # 로그인 여부 확인 - try multiple methods
                 is_logged_in = False
-                if "login" not in page.url.lower():
-                    user_profile = await page.query_selector('.header-user-profile, a[href*="/user/"]')
-                    if user_profile:
-                        is_logged_in = True
-                        print(">>> Cookie authentication successful")
+                page_url = page.url.lower()
+                print(f">>> Current URL after navigation: {page.url}")
+                
+                # Method 1: Check if URL contains login/sign-in (definitely not logged in)
+                if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
+                    print(">>> URL indicates login page - not authenticated")
+                    is_logged_in = False
+                else:
+                    # Method 2: Check for user profile elements
+                    user_profile_selectors = [
+                        '.header-user-profile',
+                        'a[href*="/user/"]',
+                        '[data-testid*="user"]',
+                        '.user-profile',
+                        'a[href*="/closet/"]',
+                        'nav a[href*="/user/"]',
+                    ]
+                    
+                    for selector in user_profile_selectors:
+                        try:
+                            element = await page.query_selector(selector)
+                            if element:
+                                print(f">>> Found user profile element with selector: {selector}")
+                                is_logged_in = True
+                                break
+                        except:
+                            continue
+                    
+                    # Method 3: Check page content for logged-in indicators
+                    if not is_logged_in:
+                        try:
+                            page_content = await page.content()
+                            logged_in_indicators = [
+                                "Sign Out",
+                                "Log Out",
+                                "Sign out",
+                                "My Closet",
+                                "My Poshmark",
+                            ]
+                            for indicator in logged_in_indicators:
+                                if indicator in page_content:
+                                    print(f">>> Found logged-in indicator in content: {indicator}")
+                                    is_logged_in = True
+                                    break
+                        except Exception as e:
+                            print(f">>> Could not check page content: {e}")
+                
+                if is_logged_in:
+                    print(">>> Cookie authentication successful")
+                else:
+                    print(">>> Cookie authentication failed - no logged-in indicators found")
                 
                 if not is_logged_in:
                     # Try to get more details about why login failed
@@ -719,7 +778,27 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         except:
                             pass
                         
-                        raise PoshmarkAuthError("Unable to verify login status. Please reconnect your Poshmark account using the Chrome Extension.")
+                        # Capture screenshot as base64 for frontend debugging
+                        screenshot_base64 = None
+                        try:
+                            screenshot_bytes = await page.screenshot(full_page=True)
+                            import base64
+                            screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                            print(">>> Screenshot captured for debugging")
+                        except Exception as e:
+                            print(f">>> Failed to capture screenshot: {e}")
+                        
+                        # Try to get page title for more context
+                        try:
+                            page_title = await page.title()
+                            print(f">>> Page title: {page_title}")
+                        except:
+                            pass
+                        
+                        raise PoshmarkAuthError(
+                            "Unable to verify login status. Please reconnect your Poshmark account using the Chrome Extension.",
+                            screenshot_base64=screenshot_base64
+                        )
                 
                 # 실제 username 추출 (closet URL에 사용)
                 actual_username = username
@@ -747,7 +826,7 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     # 타임아웃이 발생해도 계속 진행
                 
                 print(f">>> Extracting listings from closet...")
-                items = await page.evaluate("""
+                items = await page.evaluate(r"""
                     () => {
                         const items = [];
                         // 다양한 선택자 시도

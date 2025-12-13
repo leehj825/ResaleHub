@@ -891,5 +891,9 @@ async def poshmark_inventory(db: Session = Depends(get_db), current_user: User =
     try:
         items = await get_poshmark_inventory(db, current_user)
         return {"items": items, "total": len(items)}
-    except PoshmarkAuthError as e: raise HTTPException(status_code=401, detail=str(e))
+    except PoshmarkAuthError as e:
+        error_detail = {"detail": str(e)}
+        if e.screenshot_base64:
+            error_detail["screenshot"] = e.screenshot_base64
+        raise HTTPException(status_code=401, detail=error_detail)
     except Exception as e: raise HTTPException(status_code=500, detail=f"Failed to fetch Poshmark inventory: {str(e)}")

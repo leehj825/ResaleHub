@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:frontend/models/poshmark_item.dart';
 import 'package:frontend/services/marketplace_service.dart';
@@ -18,6 +19,7 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   List<PoshmarkItem> _items = [];
   bool _isLoading = true;
   String? _error;
+  String? _errorScreenshotBase64;
 
   @override
   void initState() {
@@ -37,11 +39,21 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
       setState(() {
         _items = items;
         _isLoading = false;
+        _error = null;
+        _errorScreenshotBase64 = null;
       });
     } catch (e) {
       if (!mounted) return;
+      
+      // Check if error has screenshot
+      String? screenshotBase64;
+      if (e is PoshmarkInventoryError) {
+        screenshotBase64 = e.screenshotBase64;
+      }
+      
       setState(() {
         _error = e.toString();
+        _errorScreenshotBase64 = screenshotBase64;
         _isLoading = false;
       });
     }
@@ -122,18 +134,50 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
     }
 
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red, size: 48),
-              const SizedBox(height: 16),
-              Text('Error: $_error', textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: _loadInventory, child: const Text('Retry')),
-            ],
+      return SingleChildScrollView(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 48),
+                const SizedBox(height: 16),
+                Text('Error: $_error', textAlign: TextAlign.center),
+                if (_errorScreenshotBase64 != null) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Debug Screenshot:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        base64Decode(_errorScreenshotBase64!),
+                        fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: Text('Failed to load screenshot'),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: _loadInventory,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
           ),
         ),
       );

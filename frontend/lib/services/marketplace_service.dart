@@ -6,6 +6,17 @@ import 'package:frontend/models/ebay_item.dart';
 import 'package:frontend/models/poshmark_item.dart';
 import 'auth_service.dart';
 
+// Custom error class for Poshmark inventory errors with screenshot support
+class PoshmarkInventoryError implements Exception {
+  final String message;
+  final String? screenshotBase64;
+  
+  PoshmarkInventoryError(this.message, {this.screenshotBase64});
+  
+  @override
+  String toString() => message;
+}
+
 class MarketplaceService {
   final _auth = AuthService();
 
@@ -174,6 +185,36 @@ class MarketplaceService {
     );
 
     if (res.statusCode != 200) {
+      // Try to extract screenshot from error response
+      try {
+        final errorData = jsonDecode(res.body);
+        if (errorData is Map<String, dynamic> && errorData.containsKey('detail')) {
+          final detail = errorData['detail'];
+          if (detail is Map<String, dynamic> && detail.containsKey('screenshot')) {
+            // Return error with screenshot
+            throw PoshmarkInventoryError(
+              detail['detail']?.toString() ?? 'Failed to load Poshmark inventory',
+              screenshotBase64: detail['screenshot'] as String?,
+            );
+          } else if (detail is Map<String, dynamic> && detail.containsKey('detail')) {
+            // Nested detail structure
+            final nestedDetail = detail['detail'];
+            final screenshot = detail['screenshot'] as String?;
+            throw PoshmarkInventoryError(
+              nestedDetail?.toString() ?? 'Failed to load Poshmark inventory',
+              screenshotBase64: screenshot,
+            );
+          } else if (detail is String) {
+            throw PoshmarkInventoryError(detail);
+          }
+        }
+      } catch (e) {
+        // If it's already our custom error, rethrow it
+        if (e is PoshmarkInventoryError) {
+          rethrow;
+        }
+        // If parsing fails, use original error
+      }
       throw Exception('Failed to load Poshmark inventory: ${res.body}');
     }
 
