@@ -5,7 +5,9 @@
   "description": "Sync Poshmark cookies to ResaleHub for desktop-to-cloud authentication",
   "permissions": [
     "cookies",
-    "activeTab"
+    "activeTab",
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://poshmark.com/*",

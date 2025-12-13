@@ -129,6 +129,7 @@ def sync_extension(
     """
     pairing_code = request.get('pairing_code')
     cookies = request.get('cookies', [])
+    username = request.get('username')  # Username sent by extension
     
     if not pairing_code or len(str(pairing_code)) != 6:
         raise HTTPException(
@@ -160,12 +161,17 @@ def sync_extension(
     pairing.used_at = datetime.utcnow()
     pairing.cookies_received = True
     
-    # Extract username from cookies
-    username = "Connected Account"
-    for cookie in cookies:
-        if cookie.get('name') in ['un', 'username']:
-            username = cookie.get('value', username)
-            break
+    # Use username from extension if provided, otherwise try to extract from cookies
+    if not username or username == "Connected Account":
+        # Fallback: Extract username from cookies
+        for cookie in cookies:
+            if cookie.get('name') in ['un', 'username']:
+                username = cookie.get('value', username)
+                break
+        
+        # If still not found, use default
+        if not username or username == "Connected Account":
+            username = "Connected Account"
     
     # Save cookies to marketplace account
     import json

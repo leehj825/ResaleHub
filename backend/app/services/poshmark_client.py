@@ -999,21 +999,27 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                             screenshot_base64=screenshot_base64
                         )
                 
-                # Username이 아직 추출되지 않았으면 쿠키에서 시도
+                # Username이 아직 추출되지 않았으면 저장된 username 사용 (extension에서 보낸 것)
                 if actual_username == username or actual_username == "Connected Account":
-                    log("Extracting username from cookies as fallback...")
-                    for cookie in cookies:
-                        cookie_name = cookie.get('name', '').lower()
-                        if cookie_name in ['un', 'username', 'user_name', 'user']:
-                            cookie_username = cookie.get('value', '').strip()
-                            if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
-                                actual_username = cookie_username
-                                log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
-                                break
+                    # 저장된 username이 유효한지 확인
+                    if username and username != "Connected Account" and username.strip():
+                        actual_username = username
+                        log(f"Using stored username from extension: {actual_username}")
+                    else:
+                        # Fallback: 쿠키에서 시도
+                        log("Extracting username from cookies as fallback...")
+                        for cookie in cookies:
+                            cookie_name = cookie.get('name', '').lower()
+                            if cookie_name in ['un', 'username', 'user_name', 'user']:
+                                cookie_username = cookie.get('value', '').strip()
+                                if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
+                                    actual_username = cookie_username
+                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
+                                    break
                 
                 if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
                     log("✗ ERROR: Could not extract valid username!")
-                    raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your account using the Chrome Extension.")
+                    raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your Poshmark account using the Chrome Extension.")
                 
                 log(f"Using username: {actual_username}")
                 
