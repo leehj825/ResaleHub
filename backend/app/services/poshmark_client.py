@@ -545,21 +545,28 @@ async def publish_listing_to_poshmark(
         if not description_filled:
             print(f">>> Warning: Could not fill description field")
         
-        # 가격 - try multiple selectors
+        # 가격 - try multiple selectors (price might be on a different step/page)
         price = str(int(float(listing.price or 0)))
         price_filled = False
         price_selectors = [
             'input[name*="price" i]',
             'input[placeholder*="price" i]',
             'input[placeholder*="Price" i]',
+            'input[placeholder*="Original Price" i]',
+            'input[placeholder*="List Price" i]',
             'input[data-testid*="price"]',
             'input[name="current_price"]',
+            'input[name="list_price"]',
             'input[type="number"]',
+            'input[type="text"][inputmode="numeric"]',
         ]
         for selector in price_selectors:
             try:
-                price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                price_field = await page.wait_for_selector(selector, timeout=2000, state="visible")
                 if price_field:
+                    # Clear the field first
+                    await price_field.click()
+                    await price_field.fill("")
                     await price_field.fill(price)
                     print(f">>> ✓ Filled price with selector: {selector}")
                     price_filled = True
@@ -568,10 +575,31 @@ async def publish_listing_to_poshmark(
                 continue
         
         if not price_filled:
-            print(f">>> Warning: Could not fill price field")
+            print(f">>> Warning: Could not fill price field (might be on next step)")
         
         # Wait a bit for form to process the inputs
         await asyncio.sleep(1)
+        
+        # Close any modals that might be open
+        try:
+            modal_close_buttons = await page.query_selector_all('button[aria-label*="close" i], button[aria-label*="Close" i], .modal-close, [data-test*="close"], [data-test*="modal-close"]')
+            for close_btn in modal_close_buttons:
+                try:
+                    await close_btn.click(timeout=1000)
+                    print(f">>> Closed modal")
+                    await asyncio.sleep(0.5)
+                except:
+                    pass
+            
+            # Also try to click outside modal or press Escape
+            modals = await page.query_selector_all('.modal-backdrop, [data-test="modal"], .modal')
+            if modals:
+                print(f">>> Found {len(modals)} modals, trying to close them...")
+                # Try pressing Escape
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f">>> Warning: Could not close modals: {e}")
         
         # 4. 발행 버튼 클릭
         print(f">>> Looking for publish button...")
@@ -613,8 +641,112 @@ async def publish_listing_to_poshmark(
             await page.screenshot(path="/tmp/no_publish_btn.png")
             raise PoshmarkPublishError("Publish button not found")
 
-        await publish_btn.click()
-        print(">>> Clicked publish button")
+        # Wait for any modals to close before clicking
+        try:
+            # Wait for modal backdrop to disappear
+            await page.wait_for_selector('.modal-backdrop--in', state="hidden", timeout=3000)
+            print(f">>> Modal backdrop closed")
+        except:
+            # Modal might not be there or already closed
+            pass
+        
+        # Try to close any remaining modals
+        try:
+            modals = await page.query_selector_all('.modal-backdrop--in, [data-test="modal"].modal-backdrop--in')
+            if modals:
+                print(f">>> Found {len(modals)} active modals, closing...")
+                # Press Escape to close modals
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(1)
+                # Try clicking outside modal
+                await page.evaluate("""
+                    () => {
+                        const modals = document.querySelectorAll('.modal-backdrop--in');
+                        modals.forEach(modal => {
+                            const clickEvent = new MouseEvent('click', { bubbles: true });
+                            modal.dispatchEvent(clickEvent);
+                        });
+                    }
+                """)
+                await asyncio.sleep(1)
+        except Exception as e:
+            print(f">>> Warning: Could not close modals: {e}")
+        
+        # Try clicking the button - if modal intercepts, use JavaScript click
+        try:
+            await publish_btn.click(timeout=5000)
+            print(">>> Clicked publish button")
+        except Exception as click_error:
+            if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
+                print(f">>> Modal intercepted click, using JavaScript click instead...")
+                # Use JavaScript to click the button directly
+                await publish_btn.evaluate("button => button.click()")
+                print(">>> Clicked publish button via JavaScript")
+            else:
+                raise
+        
+        # Wait for navigation or next step
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except:
+            pass
+        
+        # If we clicked "Next", we might be on a price/shipping step - fill price if needed
+        current_url = page.url
+        button_text = ""
+        try:
+            button_text = await publish_btn.inner_text()
+        except:
+            pass
+        
+        if "next" in button_text.lower() and not price_filled:
+            print(f">>> Clicked 'Next', checking for price field on next step...")
+            await asyncio.sleep(2)  # Wait for next step to load
+            
+            # Try to fill price again on the next step
+            for selector in price_selectors:
+                try:
+                    price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                    if price_field:
+                        await price_field.click()
+                        await price_field.fill("")
+                        await price_field.fill(price)
+                        print(f">>> ✓ Filled price on next step with selector: {selector}")
+                        price_filled = True
+                        break
+                except:
+                    continue
+            
+            # Look for final publish button
+            if price_filled:
+                print(f">>> Looking for final publish button...")
+                final_publish_btn = None
+                for selector in publish_selectors:
+                    try:
+                        final_publish_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                        if final_publish_btn:
+                            btn_text = await final_publish_btn.inner_text()
+                            if "List" in btn_text or "Publish" in btn_text:
+                                print(f">>> ✓ Found final publish button: {btn_text}")
+                                # Close modals again
+                                try:
+                                    await page.keyboard.press('Escape')
+                                    await asyncio.sleep(0.5)
+                                except:
+                                    pass
+                                
+                                try:
+                                    await final_publish_btn.click(timeout=5000)
+                                    print(">>> Clicked final publish button")
+                                except Exception as e:
+                                    if "intercepts" in str(e).lower():
+                                        await final_publish_btn.evaluate("button => button.click()")
+                                        print(">>> Clicked final publish button via JavaScript")
+                                    else:
+                                        raise
+                                break
+                    except:
+                        continue
         
         # 완료 대기
         try:
