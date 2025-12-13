@@ -785,95 +785,90 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
             log("Creating new page...")
             page = await context.new_page()
             
-            # 리소스 차단 (인벤토리 조회는 텍스트만 필요하므로 강력하게 적용)
-            # 단, 스크립트는 허용 (동적 콘텐츠 로딩에 필요)
+            # 리소스 차단 최적화: 더 많은 리소스 차단하여 속도 향상
             log("Setting up resource blocking...")
-            async def selective_block(route):
+            async def aggressive_block(route):
                 resource_type = route.request.resource_type
+                url = route.request.url.lower()
+                
+                # 이미지, 폰트, 미디어는 항상 차단
                 if resource_type in ["image", "font", "media"]:
+                    await route.abort()
+                # 광고 및 추적 스크립트 차단
+                elif resource_type == "script" and any(domain in url for domain in ["google-analytics", "googletagmanager", "facebook", "doubleclick", "adservice"]):
+                    await route.abort()
+                # CSS는 일부 허용 (레이아웃에 필요할 수 있음)
+                elif resource_type == "stylesheet" and ("analytics" in url or "tracking" in url):
                     await route.abort()
                 else:
                     await route.continue_()
             
-            await page.route("**/*", selective_block)
+            await page.route("**/*", aggressive_block)
             log("Resource blocking configured")
             
             try:
-                # 로그인 상태 확인
+                # 로그인 상태 확인 - 최적화: 직접 closet 페이지로 이동하여 확인
                 log("Navigating to feed page to check login status...")
-                await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
+                await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=15000)
                 log(f"Feed page loaded: {page.url}")
                 
-                # Wait a bit for dynamic content to load
-                await asyncio.sleep(2)
-                
-                # 로그인 여부 확인 - try multiple methods
+                # 빠른 로그인 확인 - wait_for_selector 사용 (최대 3초 대기)
                 log("Checking login status...")
                 is_logged_in = False
+                actual_username = username
                 page_url = page.url.lower()
-                log(f"Current URL: {page.url}")
                 
-                # Method 1: Check if URL contains login/sign-in (definitely not logged in)
+                # Method 1: URL 체크 (가장 빠름)
                 if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
-                    print(">>> URL indicates login page - not authenticated")
+                    log("✗ URL indicates login page - not authenticated")
                     is_logged_in = False
                 else:
-                    # Method 2: Check for user profile elements
-                    user_profile_selectors = [
-                        '.header-user-profile',
-                        'a[href*="/user/"]',
-                        '[data-testid*="user"]',
-                        '.user-profile',
-                        'a[href*="/closet/"]',
-                        'nav a[href*="/user/"]',
-                    ]
-                    
-                    for selector in user_profile_selectors:
+                    # Method 2: closet 링크 찾기 (가장 신뢰할 수 있고 username도 함께 추출)
+                    try:
+                        closet_link = await page.wait_for_selector(
+                            'a[href*="/closet/"]',
+                            timeout=3000,
+                            state="attached"
+                        )
+                        if closet_link:
+                            href = await closet_link.get_attribute("href")
+                            if href:
+                                import re
+                                match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
+                                if match:
+                                    extracted = match.group(1)
+                                    if extracted and extracted != "Connected Account":
+                                        actual_username = extracted
+                                        is_logged_in = True
+                                        log(f"✓ Found closet link, extracted username: {actual_username}")
+                    except:
+                        # closet 링크를 찾지 못했으면 다른 방법 시도
                         try:
-                            element = await page.query_selector(selector)
-                            if element:
-                                log(f"Found user profile element with selector: {selector}")
-                                is_logged_in = True
-                                
-                                # Try to extract username from this element
-                                if selector == 'a[href*="/closet/"]':
-                                    href = await element.get_attribute("href")
-                                    if href:
-                                        import re
-                                        match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
-                                        if match:
-                                            username = match.group(1)
-                                            log(f"Extracted username from closet link: {username}")
-                                elif selector == 'a[href*="/user/"]':
-                                    href = await element.get_attribute("href")
-                                    if href:
-                                        import re
-                                        match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
-                                        if match:
-                                            username = match.group(1)
-                                            log(f"Extracted username from user link: {username}")
-                                break
+                            user_link = await page.wait_for_selector(
+                                'a[href*="/user/"], nav a[href*="/user/"]',
+                                timeout=2000,
+                                state="attached"
+                            )
+                            if user_link:
+                                href = await user_link.get_attribute("href")
+                                if href:
+                                    import re
+                                    match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                                    if match:
+                                        extracted = match.group(1)
+                                        if extracted and extracted != "Connected Account":
+                                            actual_username = extracted
+                                            is_logged_in = True
+                                            log(f"✓ Found user link, extracted username: {actual_username}")
                         except:
-                            continue
-                    
-                    # Method 3: Check page content for logged-in indicators
-                    if not is_logged_in:
-                        try:
-                            page_content = await page.content()
-                            logged_in_indicators = [
-                                "Sign Out",
-                                "Log Out",
-                                "Sign out",
-                                "My Closet",
-                                "My Poshmark",
-                            ]
-                            for indicator in logged_in_indicators:
-                                if indicator in page_content:
-                                    print(f">>> Found logged-in indicator in content: {indicator}")
+                            # 빠른 텍스트 체크
+                            try:
+                                page_content = await page.content()
+                                if any(indicator in page_content for indicator in ["Sign Out", "Log Out", "My Closet"]):
                                     is_logged_in = True
-                                    break
-                        except Exception as e:
-                            print(f">>> Could not check page content: {e}")
+                                    log("✓ Found logged-in indicators in page content")
+                            except:
+                                pass
                 
                 if is_logged_in:
                     log("✓ Cookie authentication successful")
@@ -931,69 +926,17 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                             screenshot_base64=screenshot_base64
                         )
                 
-                # 실제 username 추출 (closet URL에 사용)
-                log("Extracting username from page...")
-                actual_username = username
-                
-                # Try multiple methods to extract username
-                try:
-                    # Method 1: Look for closet link (most reliable)
-                    log("Trying to find closet link...")
-                    closet_links = await page.query_selector_all('a[href*="/closet/"]')
-                    if closet_links:
-                        for link in closet_links:
-                            href = await link.get_attribute("href")
-                            if href:
-                                import re
-                                match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
-                                if match:
-                                    extracted = match.group(1)
-                                    if extracted and extracted != "Connected Account":
-                                        actual_username = extracted
-                                        log(f"✓ Extracted username from closet link: {actual_username}")
-                                        break
-                    
-                    # Method 2: Look for user link if closet link didn't work
-                    if actual_username == username or actual_username == "Connected Account":
-                        log("Trying to find user link...")
-                        user_links = await page.query_selector_all('a[href*="/user/"]')
-                        for link in user_links:
-                            href = await link.get_attribute("href")
-                            if href:
-                                import re
-                                match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
-                                if match:
-                                    extracted = match.group(1)
-                                    if extracted and extracted != "Connected Account":
-                                        actual_username = extracted
-                                        log(f"✓ Extracted username from user link: {actual_username}")
-                                        break
-                    
-                    # Method 3: Try to get from cookies (un cookie usually has username)
-                    if actual_username == username or actual_username == "Connected Account":
-                        log("Trying to extract username from cookies...")
-                        for cookie in cookies:
-                            cookie_name = cookie.get('name', '').lower()
-                            if cookie_name in ['un', 'username', 'user_name', 'user']:
-                                cookie_username = cookie.get('value', '').strip()
-                                if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
-                                    actual_username = cookie_username
-                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
-                                    break
-                    
-                    # Method 4: Try to extract from page URL
-                    if actual_username == username or actual_username == "Connected Account":
-                        page_url = page.url
-                        import re
-                        match = re.search(r"/(?:closet|user)/([A-Za-z0-9_\-]+)", page_url)
-                        if match:
-                            extracted = match.group(1)
-                            if extracted and extracted != "Connected Account":
-                                actual_username = extracted
-                                log(f"✓ Extracted username from URL: {actual_username}")
-                            
-                except Exception as e:
-                    log(f"Error extracting username: {e}, current: {actual_username}")
+                # Username이 아직 추출되지 않았으면 쿠키에서 시도
+                if actual_username == username or actual_username == "Connected Account":
+                    log("Extracting username from cookies as fallback...")
+                    for cookie in cookies:
+                        cookie_name = cookie.get('name', '').lower()
+                        if cookie_name in ['un', 'username', 'user_name', 'user']:
+                            cookie_username = cookie.get('value', '').strip()
+                            if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
+                                actual_username = cookie_username
+                                log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
+                                break
                 
                 if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
                     log("✗ ERROR: Could not extract valid username!")
@@ -1004,41 +947,28 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 log(f"Navigating to closet page: {actual_username}")
                 closet_url = f"https://poshmark.com/closet/{actual_username}"
                 try:
-                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=20000)
+                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=15000)
                     log(f"Closet page loaded: {page.url}")
                     
-                    # Wait for any listing links or tiles to appear (with timeout)
-                    log("Waiting for listing content to load...")
+                    # 빠른 체크: listing 링크가 있는지 확인 (최대 2초 대기)
                     try:
-                        await page.wait_for_selector('a[href*="/listing/"]', timeout=5000, state="attached")
+                        await page.wait_for_selector('a[href*="/listing/"]', timeout=2000, state="attached")
                         log("✓ Found listing links on page")
                     except:
                         log("⚠ No listing links found immediately, continuing...")
-                    
-                    # Short wait for dynamic content
-                    await asyncio.sleep(1)
                 except PlaywrightTimeoutError:
                     log("⚠ Warning: Page load timeout, but continuing with extraction...")
                 
                 log("Starting item extraction...")
                 
-                # Debug: Check what's actually on the page
-                log("Analyzing page structure...")
-                page_info = await page.evaluate("""
-                    () => {
-                        const links = document.querySelectorAll('a[href*="/listing/"]');
-                        const tiles = document.querySelectorAll('[class*="tile"], [class*="card"], article');
-                        const allLinks = document.querySelectorAll('a');
-                        return {
-                            listingLinks: links.length,
-                            tiles: tiles.length,
-                            allLinks: allLinks.length,
-                            pageTitle: document.title,
-                            bodyText: document.body.innerText.substring(0, 200)
-                        };
-                    }
-                """)
-                log(f"Page analysis: {page_info}")
+                # 빠른 스크롤로 동적 콘텐츠 로드 (최소 대기)
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(0.5)  # 0.5초로 단축
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await asyncio.sleep(0.3)  # 0.3초로 단축
+                except Exception as e:
+                    log(f"Warning: Scrolling failed: {e}")
                 
                 items = await page.evaluate(r"""
                     () => {
