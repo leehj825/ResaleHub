@@ -353,11 +353,11 @@ async def publish_listing_to_poshmark(
                             await page.goto(href, wait_until="domcontentloaded", timeout=15000)
                             await asyncio.sleep(2)
                             listing_url = href
+                            page_loaded = True
                 else:
                     listing_url = "https://poshmark.com/listing/new"
                     page_loaded = True
             except Exception as e:
-                print(f">>> Final navigation attempt failed: {e}")
                 print(f">>> Final navigation attempt failed: {e}")
         
         if not page_loaded:
@@ -417,7 +417,8 @@ async def publish_listing_to_poshmark(
                     const fileInputs = document.querySelectorAll('input[type="file"]');
                     const textInputs = document.querySelectorAll('input[type="text"], input[name*="title"], input[placeholder*="title"]');
                     const textareas = document.querySelectorAll('textarea');
-                    const buttons = document.querySelectorAll('button[type="submit"], button:contains("List"), button:contains("Publish")');
+                    const buttons = Array.from(document.querySelectorAll('button[type="submit"]'));
+                    const listButtons = Array.from(document.querySelectorAll('button')).filter(btn => btn.innerText && (btn.innerText.includes("List") || btn.innerText.includes("Publish")));
                     return {
                         fileInputs: fileInputs.length,
                         textInputs: textInputs.length,
@@ -433,10 +434,11 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-            # 봇 탐지 화면인지 확인
+                # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
-                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                
             
             # 스크린샷 저장
             screenshot_path = "/tmp/debug_failed_form_load.png"
@@ -446,8 +448,7 @@ async def publish_listing_to_poshmark(
             print(f">>> Page title: {await page.title()}")
             
             # 페이지 소스 일부 로깅
-            print(f">>> Page content sample: {page_content[:2000]}")
-            
+                
             raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
                 
         print(f">>> ✓ Found {len(found_elements)} form elements")
@@ -499,25 +500,114 @@ async def publish_listing_to_poshmark(
         # 3. 필수 필드 입력
         print(f">>> Filling listing details...")
         
-        # 제목
-        await page.fill('input[name*="title" i], input[placeholder*="title" i]', listing.title or "Untitled")
+        # 제목 - try multiple selectors
+        title_filled = False
+        title_selectors = [
+            'input[name*="title" i]',
+            'input[placeholder*="title" i]',
+            'input[placeholder*="What" i]',
+            'input[type="text"][placeholder*="What"]',
+            'input[data-testid*="title"]',
+        ]
+        for selector in title_selectors:
+            try:
+                title_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if title_field:
+                    await title_field.fill(listing.title or "Untitled")
+                    print(f">>> ✓ Filled title with selector: {selector}")
+                    title_filled = True
+                    break
+            except:
+                continue
         
-        # 설명
-        await page.fill('textarea[name*="description" i]', listing.description or "No description")
+        if not title_filled:
+            print(f">>> Warning: Could not fill title field")
         
-        # 가격
+        # 설명 - try multiple selectors
+        description_filled = False
+        description_selectors = [
+            'textarea[name*="description" i]',
+            'textarea[placeholder*="description" i]',
+            'textarea[placeholder*="Describe" i]',
+            'textarea[data-testid*="description"]',
+        ]
+        for selector in description_selectors:
+            try:
+                desc_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if desc_field:
+                    await desc_field.fill(listing.description or "No description")
+                    print(f">>> ✓ Filled description with selector: {selector}")
+                    description_filled = True
+                    break
+            except:
+                continue
+        
+        if not description_filled:
+            print(f">>> Warning: Could not fill description field")
+        
+        # 가격 - try multiple selectors
         price = str(int(float(listing.price or 0)))
-        await page.fill('input[name*="price" i], input[placeholder*="Original Price"]', price) # Original Price
-        await page.fill('input[name="current_price"], input[data-testid="price-input"]', price) # Listing Price
+        price_filled = False
+        price_selectors = [
+            'input[name*="price" i]',
+            'input[placeholder*="price" i]',
+            'input[placeholder*="Price" i]',
+            'input[data-testid*="price"]',
+            'input[name="current_price"]',
+            'input[type="number"]',
+        ]
+        for selector in price_selectors:
+            try:
+                price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if price_field:
+                    await price_field.fill(price)
+                    print(f">>> ✓ Filled price with selector: {selector}")
+                    price_filled = True
+                    # Don't break - might need to fill multiple price fields
+            except:
+                continue
+        
+        if not price_filled:
+            print(f">>> Warning: Could not fill price field")
+        
+        # Wait a bit for form to process the inputs
+        await asyncio.sleep(1)
         
         # 4. 발행 버튼 클릭
         print(f">>> Looking for publish button...")
         
-        publish_btn = await page.wait_for_selector(
-            'button[type="submit"]:has-text("List Item"), button:has-text("Next"), button:has-text("Publish")',
-            state="visible", 
-            timeout=5000
-        )
+        publish_btn = None
+        publish_selectors = [
+            'button:has-text("List")',
+            'button:has-text("List Item")',
+            'button:has-text("Next")',
+            'button:has-text("Publish")',
+            'button[type="submit"]',
+            'button[data-testid*="submit"]',
+            'button[data-testid*="publish"]',
+        ]
+        
+        for selector in publish_selectors:
+            try:
+                publish_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if publish_btn:
+                    print(f">>> ✓ Found publish button with selector: {selector}")
+                    break
+            except:
+                continue
+        
+        if not publish_btn:
+            # Try to find any button with "List" or "Publish" text
+            try:
+                buttons = await page.query_selector_all('button')
+                for btn in buttons:
+                    text = await btn.inner_text()
+                    if text and ("List" in text or "Publish" in text or "Next" in text):
+                        publish_btn = btn
+                        print(f">>> ✓ Found publish button by text: {text}")
+                        break
+            except:
+                pass
         
         if not publish_btn:
             await page.screenshot(path="/tmp/no_publish_btn.png")
