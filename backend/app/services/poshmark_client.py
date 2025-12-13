@@ -352,10 +352,12 @@ async def publish_listing_to_poshmark(
                             print(f">>> Found alternative link: {href}")
                             await page.goto(href, wait_until="domcontentloaded", timeout=15000)
                             await asyncio.sleep(2)
+                            listing_url = href
                 else:
                     listing_url = "https://poshmark.com/listing/new"
                     page_loaded = True
             except Exception as e:
+                print(f">>> Final navigation attempt failed: {e}")
                 print(f">>> Final navigation attempt failed: {e}")
         
         if not page_loaded:
@@ -368,15 +370,69 @@ async def publish_listing_to_poshmark(
             print(f">>> Page content sample: {content[:1000]}")
             raise PoshmarkPublishError(f"Could not access Poshmark listing creation page. Current URL: {page.url}, Title: {await page.title()}")
 
-        print(f">>> Looking for listing form elements...")
+        # Wait for page to fully load (Vue.js apps need time to render)
+        print(f">>> Waiting for page to fully load...")
         try:
-            await page.wait_for_selector(
-                'input[type="file"], input[name*="title" i], textarea[name*="description" i], [data-testid*="title"]',
-                timeout=10000,
-                state="attached"
-            )
-            print(f">>> ✓ Found listing form elements")
-        except PlaywrightTimeoutError:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except:
+            # If networkidle times out, wait a bit more for Vue to render
+            await asyncio.sleep(3)
+        
+        # Additional wait for Vue.js to render the form
+        await asyncio.sleep(2)
+        
+        print(f">>> Looking for listing form elements...")
+        
+        # Try multiple selectors that Poshmark might use
+        form_selectors = [
+            'input[type="file"]',
+            'input[type="file"][accept*="image"]',
+            'input[name*="title" i]',
+            'input[placeholder*="title" i]',
+            'textarea[name*="description" i]',
+            'textarea[placeholder*="description" i]',
+            '[data-testid*="title"]',
+            '[data-testid*="description"]',
+            'input[type="text"][name*="title"]',
+            'input[type="text"][placeholder*="What"]',  # Poshmark often uses "What are you selling?"
+            'button[type="submit"]',
+            'button:has-text("List")',
+            'button:has-text("Publish")',
+        ]
+        
+        found_elements = []
+        for selector in form_selectors:
+            try:
+                element = await page.query_selector(selector)
+                if element:
+                    found_elements.append(selector)
+                    print(f">>> ✓ Found element with selector: {selector}")
+            except:
+                pass
+        
+        # Also check with JavaScript evaluation
+        try:
+            form_info = await page.evaluate("""
+                () => {
+                    const fileInputs = document.querySelectorAll('input[type="file"]');
+                    const textInputs = document.querySelectorAll('input[type="text"], input[name*="title"], input[placeholder*="title"]');
+                    const textareas = document.querySelectorAll('textarea');
+                    const buttons = document.querySelectorAll('button[type="submit"], button:contains("List"), button:contains("Publish")');
+                    return {
+                        fileInputs: fileInputs.length,
+                        textInputs: textInputs.length,
+                        textareas: textareas.length,
+                        buttons: buttons.length,
+                        bodyText: document.body.innerText.substring(0, 200)
+                    };
+                }
+            """)
+            print(f">>> Form elements found via JS: {form_info}")
+        except Exception as e:
+            print(f">>> Could not evaluate form info: {e}")
+        
+        # If we found at least one form element, continue
+        if not found_elements:
             # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
@@ -390,9 +446,11 @@ async def publish_listing_to_poshmark(
             print(f">>> Page title: {await page.title()}")
             
             # 페이지 소스 일부 로깅
-            print(f">>> Page content sample: {page_content[:1000]}")
+            print(f">>> Page content sample: {page_content[:2000]}")
             
             raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
+                
+        print(f">>> ✓ Found {len(found_elements)} form elements")
         
         # 2. 이미지 업로드 (리소스 차단을 피하기 위해 이 부분은 주의 필요)
         if listing_images:
