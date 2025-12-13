@@ -549,31 +549,86 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
             
             # 쿠키를 컨텍스트에 추가
             try:
+                import time
+                current_timestamp = time.time()
+                
                 # Playwright cookie format에 맞게 변환
                 playwright_cookies = []
+                expired_count = 0
+                invalid_count = 0
+                
                 for cookie in cookies:
+                    # Skip expired cookies
+                    if cookie.get("expirationDate"):
+                        expiration = cookie.get("expirationDate")
+                        if isinstance(expiration, (int, float)):
+                            if expiration < current_timestamp:
+                                expired_count += 1
+                                continue
+                    
+                    # Extract domain - handle both .poshmark.com and poshmark.com
+                    domain = cookie.get("domain", "poshmark.com")
+                    if domain.startswith("."):
+                        domain = domain[1:]  # Remove leading dot for Playwright
+                    
+                    # Ensure domain is valid
+                    if not domain or "poshmark.com" not in domain:
+                        domain = "poshmark.com"
+                    
+                    # Skip cookies without name or value
+                    name = cookie.get("name", "").strip()
+                    value = cookie.get("value", "").strip()
+                    if not name or not value:
+                        invalid_count += 1
+                        continue
+                    
                     playwright_cookie = {
-                        "name": cookie.get("name", ""),
-                        "value": cookie.get("value", ""),
-                        "domain": cookie.get("domain", "poshmark.com"),
+                        "name": name,
+                        "value": value,
+                        "domain": domain,
                         "path": cookie.get("path", "/"),
                     }
+                    
                     # Optional fields
                     if cookie.get("secure"):
                         playwright_cookie["secure"] = True
                     if cookie.get("httpOnly"):
                         playwright_cookie["httpOnly"] = True
                     if cookie.get("expirationDate"):
-                        playwright_cookie["expires"] = int(cookie["expirationDate"])
-                    if cookie.get("sameSite"):
-                        playwright_cookie["sameSite"] = cookie["sameSite"].upper()
+                        exp_date = cookie.get("expirationDate")
+                        if isinstance(exp_date, (int, float)) and exp_date > current_timestamp:
+                            playwright_cookie["expires"] = int(exp_date)
+                    
+                    # Handle sameSite (Playwright expects "Strict", "Lax", or "None")
+                    same_site = cookie.get("sameSite")
+                    if same_site:
+                        same_site_upper = str(same_site).upper()
+                        if same_site_upper in ["STRICT", "LAX", "NONE"]:
+                            playwright_cookie["sameSite"] = same_site_upper
+                        elif same_site_upper in ["NO_RESTRICTION", "UNSPECIFIED"]:
+                            playwright_cookie["sameSite"] = "None"
                     
                     playwright_cookies.append(playwright_cookie)
                 
+                if expired_count > 0:
+                    print(f">>> Warning: {expired_count} expired cookies were skipped")
+                if invalid_count > 0:
+                    print(f">>> Warning: {invalid_count} invalid cookies were skipped")
+                
+                if len(playwright_cookies) == 0:
+                    raise PoshmarkAuthError("No valid cookies found. All cookies may be expired. Please reconnect your Poshmark account.")
+                
+                # Add cookies to context
                 await context.add_cookies(playwright_cookies)
-                print(f">>> Loaded {len(playwright_cookies)} cookies into browser context")
+                print(f">>> Loaded {len(playwright_cookies)} valid cookies into browser context")
+                
+            except PoshmarkAuthError:
+                raise
             except Exception as e:
-                print(f">>> Warning: Failed to load some cookies: {e}")
+                print(f">>> Error loading cookies: {e}")
+                import traceback
+                traceback.print_exc()
+                raise PoshmarkAuthError(f"Failed to load cookies: {str(e)}")
             
             page = await context.new_page()
             
@@ -602,7 +657,35 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         print(">>> Cookie authentication successful")
                 
                 if not is_logged_in:
-                    raise PoshmarkAuthError("Cookies are invalid or expired. Please reconnect your Poshmark account.")
+                    # Try to get more details about why login failed
+                    page_url = page.url.lower()
+                    if "login" in page_url or "sign-in" in page_url:
+                        raise PoshmarkAuthError("Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.")
+                    else:
+                        # Check if there's a specific error message on the page
+                        try:
+                            error_selectors = [
+                                '.error',
+                                '.error-message',
+                                '[class*="error"]',
+                            ]
+                            for selector in error_selectors:
+                                try:
+                                    error_el = await page.query_selector(selector)
+                                    if error_el:
+                                        error_text = await error_el.inner_text()
+                                        if error_text and len(error_text.strip()) > 0:
+                                            raise PoshmarkAuthError(f"Authentication failed: {error_text.strip()[:100]}")
+                                except PoshmarkAuthError:
+                                    raise
+                                except:
+                                    pass
+                        except PoshmarkAuthError:
+                            raise
+                        except:
+                            pass
+                        
+                        raise PoshmarkAuthError("Unable to verify login status. Please reconnect your Poshmark account using the Chrome Extension.")
                 
                 # 실제 username 추출 (closet URL에 사용)
                 actual_username = username
