@@ -535,21 +535,37 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
     """
     Poshmark 인벤토리 조회 (쿠키 기반 인증 사용)
     """
-    username, cookies = await get_poshmark_cookies(db, user)
+    import sys
+    import time
+    start_time = time.time()
     
-    # 전체 작업에 타임아웃 설정 (최대 2분)
+    def log(msg):
+        """Log with timestamp and flush immediately"""
+        elapsed = time.time() - start_time
+        print(f">>> [{elapsed:.1f}s] {msg}", flush=True)
+        sys.stdout.flush()
+    
+    log("Starting Poshmark inventory fetch...")
+    username, cookies = await get_poshmark_cookies(db, user)
+    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)")
+    
     try:
+        log("Initializing Playwright browser...")
         async with async_playwright() as p:
+            log("Launching Chromium browser...")
             browser = await p.chromium.launch(
                 headless=True,
                 args=get_browser_launch_args()
             )
+            log("Browser launched, creating context...")
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
+            log("Browser context created")
             
             # 쿠키를 컨텍스트에 추가
+            log("Processing cookies...")
             try:
                 import time
                 current_timestamp = time.time()
@@ -674,10 +690,12 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 traceback.print_exc()
                 raise PoshmarkAuthError(f"Failed to load cookies: {str(e)}")
             
+            log("Creating new page...")
             page = await context.new_page()
             
             # 리소스 차단 (인벤토리 조회는 텍스트만 필요하므로 강력하게 적용)
             # 단, 스크립트는 허용 (동적 콘텐츠 로딩에 필요)
+            log("Setting up resource blocking...")
             async def selective_block(route):
                 resource_type = route.request.resource_type
                 if resource_type in ["image", "font", "media"]:
@@ -686,19 +704,22 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     await route.continue_()
             
             await page.route("**/*", selective_block)
+            log("Resource blocking configured")
             
             try:
                 # 로그인 상태 확인
-                print(f">>> Checking login status...")
+                log("Navigating to feed page to check login status...")
                 await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
+                log(f"Feed page loaded: {page.url}")
                 
                 # Wait a bit for dynamic content to load
                 await asyncio.sleep(2)
                 
                 # 로그인 여부 확인 - try multiple methods
+                log("Checking login status...")
                 is_logged_in = False
                 page_url = page.url.lower()
-                print(f">>> Current URL after navigation: {page.url}")
+                log(f"Current URL: {page.url}")
                 
                 # Method 1: Check if URL contains login/sign-in (definitely not logged in)
                 if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
@@ -745,9 +766,9 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                             print(f">>> Could not check page content: {e}")
                 
                 if is_logged_in:
-                    print(">>> Cookie authentication successful")
+                    log("✓ Cookie authentication successful")
                 else:
-                    print(">>> Cookie authentication failed - no logged-in indicators found")
+                    log("✗ Cookie authentication failed - no logged-in indicators found")
                 
                 if not is_logged_in:
                     # Try to get more details about why login failed
@@ -801,6 +822,7 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         )
                 
                 # 실제 username 추출 (closet URL에 사용)
+                log("Extracting username from page...")
                 actual_username = username
                 try:
                     user_link = await page.query_selector('a[href*="/user/"]')
@@ -811,44 +833,48 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                             match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
                             if match:
                                 actual_username = match.group(1)
-                                print(f">>> Extracted username: {actual_username}")
+                                log(f"Extracted username: {actual_username}")
                 except Exception as e:
-                    print(f">>> Could not extract username from page: {e}")
+                    log(f"Could not extract username: {e}, using: {actual_username}")
                 
-                print(f">>> Navigating to closet page...")
+                log(f"Navigating to closet page: {actual_username}")
                 closet_url = f"https://poshmark.com/closet/{actual_username}"
                 try:
                     await page.goto(closet_url, wait_until="domcontentloaded", timeout=20000)
-                    print(f">>> Page loaded, waiting for content...")
+                    log(f"Closet page loaded: {page.url}")
                     
                     # Wait for any listing links or tiles to appear (with timeout)
+                    log("Waiting for listing content to load...")
                     try:
                         await page.wait_for_selector('a[href*="/listing/"]', timeout=5000, state="attached")
-                        print(">>> Found listing links on page")
+                        log("✓ Found listing links on page")
                     except:
-                        print(">>> No listing links found immediately, continuing...")
+                        log("⚠ No listing links found immediately, continuing...")
                     
                     # Short wait for dynamic content
                     await asyncio.sleep(1)
                 except PlaywrightTimeoutError:
-                    print(">>> Warning: Page load timeout, but continuing with extraction...")
+                    log("⚠ Warning: Page load timeout, but continuing with extraction...")
                 
-                print(f">>> Extracting listings from closet...")
+                log("Starting item extraction...")
                 
                 # Debug: Check what's actually on the page
+                log("Analyzing page structure...")
                 page_info = await page.evaluate("""
                     () => {
                         const links = document.querySelectorAll('a[href*="/listing/"]');
                         const tiles = document.querySelectorAll('[class*="tile"], [class*="card"], article');
+                        const allLinks = document.querySelectorAll('a');
                         return {
                             listingLinks: links.length,
                             tiles: tiles.length,
+                            allLinks: allLinks.length,
                             pageTitle: document.title,
                             bodyText: document.body.innerText.substring(0, 200)
                         };
                     }
                 """)
-                print(f">>> Page info: {page_info}")
+                log(f"Page analysis: {page_info}")
                 
                 items = await page.evaluate(r"""
                     () => {
@@ -989,38 +1015,47 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     }
                 """)
                 
-                print(f">>> Found {len(items)} items")
+                log(f"Extraction complete: Found {len(items)} items")
                 
                 if len(items) == 0:
                     # Enhanced debugging
+                    log("⚠ No items found! Collecting detailed debug info...")
                     try:
                         # Get more page info
                         debug_info = await page.evaluate("""
                             () => {
+                                const allLinks = document.querySelectorAll('a');
+                                const listingLinks = document.querySelectorAll('a[href*="/listing/"]');
+                                const images = document.querySelectorAll('img');
+                                const hrefs = Array.from(allLinks).slice(0, 20).map(a => a.href || a.getAttribute('href') || '').filter(h => h);
                                 return {
-                                    allLinks: document.querySelectorAll('a').length,
-                                    listingLinks: document.querySelectorAll('a[href*="/listing/"]').length,
-                                    images: document.querySelectorAll('img').length,
+                                    allLinks: allLinks.length,
+                                    listingLinks: listingLinks.length,
+                                    images: images.length,
+                                    sampleHrefs: hrefs,
                                     bodyText: document.body.innerText.substring(0, 500)
                                 };
                             }
                         """)
-                        print(f">>> Debug info: {debug_info}")
+                        log(f"Debug info: {debug_info}")
                     except Exception as e:
-                        print(f">>> Debug info collection failed: {e}")
+                        log(f"Debug info collection failed: {e}")
                     
-                    print(">>> Warning: No items found. The page structure may have changed.")
+                    log("⚠ Warning: No items found. The page structure may have changed.")
                 
                 return items
                 
             finally:
+                log("Closing browser...")
                 await browser.close()
+                log(f"✓ Complete! Total time: {time.time() - start_time:.1f}s")
     except PoshmarkAuthError:
+        log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
         raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f">>> Error fetching inventory: {error_details}")
+        log(f"✗ Error after {time.time() - start_time:.1f}s: {error_details}")
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
     
 
