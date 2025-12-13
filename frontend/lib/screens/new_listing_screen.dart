@@ -279,10 +279,10 @@ class _NewListingScreenState extends State<NewListingScreen> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          const Text('저장 중...', style: TextStyle(fontSize: 16)),
+                          const Text('Saving...', style: TextStyle(fontSize: 16)),
                         ],
                       )
-                    : const Text('저장', style: TextStyle(fontSize: 16)),
+                    : const Text('Save', style: TextStyle(fontSize: 16)),
               ),
             ),
           ],

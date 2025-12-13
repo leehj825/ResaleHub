@@ -222,7 +222,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                       ),
                       const SizedBox(height: 24),
                       Text(
-                        '연결 성공!',
+                        'Connection Successful!',
                         style: theme.textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                           color: Colors.green[700],
@@ -231,7 +231,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        '이제 창을 닫으셔도 됩니다',
+                        'You can now close this window',
                         style: theme.textTheme.bodyLarge?.copyWith(
                           color: Colors.grey[700],
                         ),
@@ -243,7 +243,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                           Navigator.of(context).pop(true);
                         },
                         icon: const Icon(Icons.check),
-                        label: const Text('완료'),
+                        label: const Text('Done'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green[600],
                           foregroundColor: Colors.white,
@@ -270,7 +270,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '연결 단계',
+                        'Connection Steps',
                         style: theme.textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -280,21 +280,21 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                       _buildStepCard(
                         context,
                         stepNumber: 1,
-                        title: '크롬 확장 프로그램 설치',
-                        description: '아이콘을 눌러 크롬 확장 프로그램을 설치하세요',
+                        title: 'Install Chrome Extension',
+                        description: 'Click the icon to install the Chrome extension',
                         icon: Icons.extension,
                         button: ElevatedButton.icon(
                           onPressed: () {
                             // Open Chrome extension installation guide
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
-                                content: Text('chrome://extensions/ 에서 확장 프로그램을 로드하세요'),
+                                content: Text('Load the extension from chrome://extensions/'),
                                 duration: Duration(seconds: 3),
                               ),
                             );
                           },
                           icon: const Icon(Icons.open_in_new),
-                          label: const Text('설치 가이드 열기'),
+                          label: const Text('Open Installation Guide'),
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -302,8 +302,8 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                       _buildStepCard(
                         context,
                         stepNumber: 2,
-                        title: 'PC에서 Poshmark 로그인 확인',
-                        description: '데스크톱 브라우저에서 poshmark.com에 로그인되어 있는지 확인하세요',
+                        title: 'Verify Poshmark Login on PC',
+                        description: 'Make sure you are logged into poshmark.com in your desktop browser',
                         icon: Icons.login,
                       ),
                       const SizedBox(height: 16),
@@ -311,8 +311,8 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                       _buildStepCard(
                         context,
                         stepNumber: 3,
-                        title: '아래 페어링 코드 입력',
-                        description: '확장 프로그램 팝업에서 아래 코드를 입력하고 "Sync" 버튼을 누르세요',
+                        title: 'Enter Pairing Code Below',
+                        description: 'Enter the code below in the extension popup and click "Sync"',
                         icon: Icons.code,
                       ),
                     ],
@@ -328,7 +328,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                   Clipboard.setData(ClipboardData(text: _pairingCode!));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('복사되었습니다'),
+                      content: Text('Copied to clipboard'),
                       duration: Duration(seconds: 2),
                       backgroundColor: Colors.green,
                     ),
@@ -369,7 +369,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          '탭하여 복사',
+                          'Tap to copy',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: Colors.grey[500],
                             fontStyle: FontStyle.italic,
@@ -392,7 +392,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                '연결 대기 중...',
+                                'Waiting for connection...',
                                 style: theme.textTheme.bodyMedium?.copyWith(
                                   color: Colors.grey[600],
                                 ),
@@ -409,7 +409,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
               
               // Expiry info
               Text(
-                '이 코드는 ${_expiresInSeconds ~/ 60}분 후 만료됩니다',
+                'This code expires in ${_expiresInSeconds ~/ 60} minutes',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: Colors.grey[600],
                 ),
@@ -422,7 +422,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
               OutlinedButton.icon(
                 onPressed: _generatePairingCode,
                 icon: const Icon(Icons.refresh),
-                label: const Text('새 코드 생성'),
+                label: const Text('Generate New Code'),
               ),
             ],
           ],
