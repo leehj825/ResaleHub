@@ -19,14 +19,14 @@ class _NewListingScreenState extends State<NewListingScreen> {
   final _skuController = TextEditingController(); // [추가] SKU 입력용
 
   // [추가] 상태(Condition) 선택용 기본값
-  String _selectedCondition = 'Used'; 
+  String _selectedCondition = 'New with Tags'; 
   
-  // eBay Condition과 매핑될 옵션들
+  // Condition 옵션들 (사용자 친화적인 이름)
   final List<String> _conditionOptions = [
-    'New',
-    'Like New',
-    'Used',
-    'For Parts'
+    'New with Tags',
+    'New without Tags',
+    'Pre-owned',
+    'For Parts or Not Working'
   ];
 
   bool _saving = false;
@@ -154,7 +154,10 @@ class _NewListingScreenState extends State<NewListingScreen> {
                   child: TextField(
                     controller: _priceController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Price (USD)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Price (USD)',
+                      hintText: '0.00',
+                    ),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -252,20 +255,36 @@ class _NewListingScreenState extends State<NewListingScreen> {
               ),
 
             // Save Button
-            _saving
-                ? const Center(child: CircularProgressIndicator())
-                : SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _save,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        backgroundColor: theme.primaryColor,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: const Text('Save Listing', style: TextStyle(fontSize: 16)),
-                    ),
-                  ),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _saving ? null : _save,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  backgroundColor: theme.primaryColor,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.grey[400],
+                  disabledForegroundColor: Colors.white,
+                ),
+                child: _saving
+                    ? Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          const Text('저장 중...', style: TextStyle(fontSize: 16)),
+                        ],
+                      )
+                    : const Text('저장', style: TextStyle(fontSize: 16)),
+              ),
+            ),
           ],
         ),
       ),

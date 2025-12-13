@@ -295,9 +295,24 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                             size: 40,
                                           ),
                                     title: Text(item.title),
-                                    subtitle: Text(
-                                      '${item.price.toStringAsFixed(2)} ${item.currency} • ${item.status}',
-                                      style: theme.textTheme.bodySmall,
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const SizedBox(height: 4),
+                                        Row(
+                                          children: [
+                                            Text(
+                                              _formatPrice(item.price, item.currency),
+                                              style: theme.textTheme.bodyMedium?.copyWith(
+                                                fontWeight: FontWeight.w600,
+                                                color: theme.primaryColor,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _buildStatusBadge(item.status),
+                                          ],
+                                        ),
+                                      ],
                                     ),
                                     trailing: IconButton(
                                       icon: const Icon(
@@ -316,6 +331,59 @@ class _ListingsScreenState extends State<ListingsScreen> {
       floatingActionButton: FloatingActionButton(
         onPressed: _openNewListing,
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  String _formatPrice(double price, String currency) {
+    // Format price with $ and 2 decimal places
+    if (currency == 'USD') {
+      return '\$${price.toStringAsFixed(2)}';
+    }
+    return '${price.toStringAsFixed(2)} $currency';
+  }
+
+  Widget _buildStatusBadge(String status) {
+    Color backgroundColor;
+    Color textColor;
+    String displayText;
+
+    switch (status.toLowerCase()) {
+      case 'active':
+      case 'listed':
+        backgroundColor = Colors.green;
+        textColor = Colors.white;
+        displayText = 'Active';
+        break;
+      case 'sold':
+        backgroundColor = Colors.grey;
+        textColor = Colors.black87;
+        displayText = 'Sold';
+        break;
+      case 'draft':
+        backgroundColor = Colors.amber;
+        textColor = Colors.black87;
+        displayText = 'Draft';
+        break;
+      default:
+        backgroundColor = Colors.grey[300]!;
+        textColor = Colors.black87;
+        displayText = status;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          color: textColor,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

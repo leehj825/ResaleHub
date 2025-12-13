@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/auth_service.dart';
@@ -18,6 +19,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
   String? _pairingCode;
   bool _loading = true;
   bool _polling = false;
+  bool _connected = false;
   String? _error;
   Timer? _pollTimer;
   int _expiresInSeconds = 600;
@@ -105,25 +107,11 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
             timer.cancel();
             if (!mounted) return;
 
-            // Show success animation
+            // Show success state
             setState(() {
               _polling = false;
+              _connected = true;
             });
-
-            // Show success message
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('✓ Poshmark connected successfully!'),
-                backgroundColor: Colors.green,
-                duration: Duration(seconds: 2),
-              ),
-            );
-
-            // Navigate back after a short delay
-            await Future.delayed(const Duration(milliseconds: 1500));
-            if (mounted) {
-              Navigator.of(context).pop(true); // Return true to indicate success
-            }
           } else if (status == 'expired' || status == 'not_found') {
             timer.cancel();
             if (!mounted) return;
@@ -217,98 +205,115 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
                 ),
               )
             
-            // Pairing code display
-            else if (_pairingCode != null) ...[
-              // Pairing Code
+            // Success state
+            else if (_connected) ...[
+              // Success message with large icon
               Card(
                 elevation: 4,
+                color: Colors.green[50],
                 child: Padding(
-                  padding: const EdgeInsets.all(32),
+                  padding: const EdgeInsets.all(48),
                   child: Column(
                     children: [
-                      Text(
-                        'Your Pairing Code',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: Colors.grey[600],
-                        ),
+                      Icon(
+                        Icons.check_circle,
+                        size: 120,
+                        color: Colors.green[600],
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 24),
                       Text(
-                        _pairingCode!,
-                        style: theme.textTheme.displayLarge?.copyWith(
+                        '연결 성공!',
+                        style: theme.textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.bold,
-                          letterSpacing: 8,
-                          color: theme.primaryColor,
+                          color: Colors.green[700],
                         ),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
-                      if (_polling)
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  theme.primaryColor,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Waiting for connection...',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
+                      Text(
+                        '이제 창을 닫으셔도 됩니다',
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: Colors.grey[700],
                         ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 32),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop(true);
+                        },
+                        icon: const Icon(Icons.check),
+                        label: const Text('완료'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green[600],
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
-              
-              const SizedBox(height: 32),
-              
-              // Instructions
+            ]
+            
+            // Pairing code display
+            else if (_pairingCode != null) ...[
+              // Step-by-step guide
               Card(
+                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Icon(Icons.info_outline, color: theme.primaryColor),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Instructions',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
+                      Text(
+                        '연결 단계',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // Step 1
+                      _buildStepCard(
+                        context,
+                        stepNumber: 1,
+                        title: '크롬 확장 프로그램 설치',
+                        description: '아이콘을 눌러 크롬 확장 프로그램을 설치하세요',
+                        icon: Icons.extension,
+                        button: ElevatedButton.icon(
+                          onPressed: () {
+                            // Open Chrome extension installation guide
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('chrome://extensions/ 에서 확장 프로그램을 로드하세요'),
+                                duration: Duration(seconds: 3),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.open_in_new),
+                          label: const Text('설치 가이드 열기'),
+                        ),
                       ),
                       const SizedBox(height: 16),
-                      _buildInstructionStep(
-                        '1',
-                        'Install the ResaleHub Chrome Extension',
-                        'Open Chrome and go to chrome://extensions/, then load the extension from the chrome_extension folder.',
+                      // Step 2
+                      _buildStepCard(
+                        context,
+                        stepNumber: 2,
+                        title: 'PC에서 Poshmark 로그인 확인',
+                        description: '데스크톱 브라우저에서 poshmark.com에 로그인되어 있는지 확인하세요',
+                        icon: Icons.login,
                       ),
-                      const SizedBox(height: 12),
-                      _buildInstructionStep(
-                        '2',
-                        'Log in to poshmark.com',
-                        'Make sure you are logged into your Poshmark account in your browser.',
-                      ),
-                      const SizedBox(height: 12),
-                      _buildInstructionStep(
-                        '3',
-                        'Enter the pairing code',
-                        'Click the ResaleHub extension icon, enter the code above, and click "Sync".',
+                      const SizedBox(height: 16),
+                      // Step 3
+                      _buildStepCard(
+                        context,
+                        stepNumber: 3,
+                        title: '아래 페어링 코드 입력',
+                        description: '확장 프로그램 팝업에서 아래 코드를 입력하고 "Sync" 버튼을 누르세요',
+                        icon: Icons.code,
                       ),
                     ],
                   ),
@@ -317,9 +322,94 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
               
               const SizedBox(height: 24),
               
+              // Pairing Code (tappable to copy)
+              GestureDetector(
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: _pairingCode!));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('복사되었습니다'),
+                      duration: Duration(seconds: 2),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                },
+                child: Card(
+                  elevation: 4,
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Your Pairing Code',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.copy,
+                              size: 18,
+                              color: Colors.grey[600],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          _pairingCode!,
+                          style: theme.textTheme.displayLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 8,
+                            color: theme.primaryColor,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '탭하여 복사',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.grey[500],
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        if (_polling)
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    theme.primaryColor,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '연결 대기 중...',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 24),
+              
               // Expiry info
               Text(
-                'This code expires in ${_expiresInSeconds ~/ 60} minutes',
+                '이 코드는 ${_expiresInSeconds ~/ 60}분 후 만료됩니다',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: Colors.grey[600],
                 ),
@@ -332,7 +422,7 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
               OutlinedButton.icon(
                 onPressed: _generatePairingCode,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Generate New Code'),
+                label: const Text('새 코드 생성'),
               ),
             ],
           ],
@@ -341,53 +431,83 @@ class _DesktopConnectionScreenState extends State<DesktopConnectionScreen> {
     );
   }
 
-  Widget _buildInstructionStep(String number, String title, String description) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: Theme.of(context).primaryColor,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              number,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildStepCard(
+    BuildContext context, {
+    required int stepNumber,
+    required String title,
+    required String description,
+    required IconData icon,
+    Widget? button,
+  }) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: theme.primaryColor,
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text(
+                    '$stepNumber',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                description,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[700],
+              const SizedBox(width: 12),
+              Icon(icon, color: theme.primaryColor, size: 24),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 16,
+                  ),
                 ),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 44),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[700],
+                  ),
+                ),
+                if (button != null) ...[
+                  const SizedBox(height: 12),
+                  button,
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
+
 }
 
