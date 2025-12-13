@@ -740,8 +740,26 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         try:
                             element = await page.query_selector(selector)
                             if element:
-                                print(f">>> Found user profile element with selector: {selector}")
+                                log(f"Found user profile element with selector: {selector}")
                                 is_logged_in = True
+                                
+                                # Try to extract username from this element
+                                if selector == 'a[href*="/closet/"]':
+                                    href = await element.get_attribute("href")
+                                    if href:
+                                        import re
+                                        match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
+                                        if match:
+                                            username = match.group(1)
+                                            log(f"Extracted username from closet link: {username}")
+                                elif selector == 'a[href*="/user/"]':
+                                    href = await element.get_attribute("href")
+                                    if href:
+                                        import re
+                                        match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                                        if match:
+                                            username = match.group(1)
+                                            log(f"Extracted username from user link: {username}")
                                 break
                         except:
                             continue
@@ -824,18 +842,72 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 # 실제 username 추출 (closet URL에 사용)
                 log("Extracting username from page...")
                 actual_username = username
+                
+                # Try multiple methods to extract username
                 try:
-                    user_link = await page.query_selector('a[href*="/user/"]')
-                    if user_link:
-                        href = await user_link.get_attribute("href")
-                        if href:
-                            import re
-                            match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
-                            if match:
-                                actual_username = match.group(1)
-                                log(f"Extracted username: {actual_username}")
+                    # Method 1: Look for closet link (most reliable)
+                    log("Trying to find closet link...")
+                    closet_links = await page.query_selector_all('a[href*="/closet/"]')
+                    if closet_links:
+                        for link in closet_links:
+                            href = await link.get_attribute("href")
+                            if href:
+                                import re
+                                match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
+                                if match:
+                                    extracted = match.group(1)
+                                    if extracted and extracted != "Connected Account":
+                                        actual_username = extracted
+                                        log(f"✓ Extracted username from closet link: {actual_username}")
+                                        break
+                    
+                    # Method 2: Look for user link if closet link didn't work
+                    if actual_username == username or actual_username == "Connected Account":
+                        log("Trying to find user link...")
+                        user_links = await page.query_selector_all('a[href*="/user/"]')
+                        for link in user_links:
+                            href = await link.get_attribute("href")
+                            if href:
+                                import re
+                                match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                                if match:
+                                    extracted = match.group(1)
+                                    if extracted and extracted != "Connected Account":
+                                        actual_username = extracted
+                                        log(f"✓ Extracted username from user link: {actual_username}")
+                                        break
+                    
+                    # Method 3: Try to get from cookies (un cookie usually has username)
+                    if actual_username == username or actual_username == "Connected Account":
+                        log("Trying to extract username from cookies...")
+                        for cookie in cookies:
+                            cookie_name = cookie.get('name', '').lower()
+                            if cookie_name in ['un', 'username', 'user_name', 'user']:
+                                cookie_username = cookie.get('value', '').strip()
+                                if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
+                                    actual_username = cookie_username
+                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
+                                    break
+                    
+                    # Method 4: Try to extract from page URL
+                    if actual_username == username or actual_username == "Connected Account":
+                        page_url = page.url
+                        import re
+                        match = re.search(r"/(?:closet|user)/([A-Za-z0-9_\-]+)", page_url)
+                        if match:
+                            extracted = match.group(1)
+                            if extracted and extracted != "Connected Account":
+                                actual_username = extracted
+                                log(f"✓ Extracted username from URL: {actual_username}")
+                            
                 except Exception as e:
-                    log(f"Could not extract username: {e}, using: {actual_username}")
+                    log(f"Error extracting username: {e}, current: {actual_username}")
+                
+                if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
+                    log("✗ ERROR: Could not extract valid username!")
+                    raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your account using the Chrome Extension.")
+                
+                log(f"Using username: {actual_username}")
                 
                 log(f"Navigating to closet page: {actual_username}")
                 closet_url = f"https://poshmark.com/closet/{actual_username}"

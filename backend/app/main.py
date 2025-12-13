@@ -162,3 +162,8 @@ app.mount(
 @app.get("/")
 def root():
     return {"message": "ResaleHub backend is running"}
+
+@app.head("/")
+def root_head():
+    """Handle HEAD requests for health checks (e.g., Render.com)"""
+    return ""
