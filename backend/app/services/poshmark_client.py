@@ -701,38 +701,142 @@ async def publish_listing_to_poshmark(
         
         if "next" in button_text.lower():
             print(f">>> Clicked 'Next', checking for price field on next step...")
-            await asyncio.sleep(2)  # Wait for next step to load
+            await asyncio.sleep(3)  # Wait longer for next step to load
             
-            # Try to fill price again on the next step
-            for selector in price_selectors:
+            # Debug: Check what's on the page
+            try:
+                page_info = await page.evaluate("""
+                    () => {
+                        const inputs = Array.from(document.querySelectorAll('input, textarea, select'));
+                        const visibleInputs = inputs.filter(inp => {
+                            const style = window.getComputedStyle(inp);
+                            return style.display !== 'none' && style.visibility !== 'hidden';
+                        });
+                        return {
+                            totalInputs: inputs.length,
+                            visibleInputs: visibleInputs.length,
+                            inputTypes: visibleInputs.map(inp => ({
+                                type: inp.type || inp.tagName,
+                                name: inp.name || '',
+                                placeholder: inp.placeholder || '',
+                                value: inp.value || '',
+                                required: inp.required || inp.hasAttribute('aria-required')
+                            })).slice(0, 10)
+                        };
+                    }
+                """)
+                print(f">>> Page inputs after Next: {page_info}")
+            except Exception as e:
+                print(f">>> Could not get page info: {e}")
+            
+            # Try to fill price again on the next step - with more selectors
+            expanded_price_selectors = price_selectors + [
+                'input[type="number"]',
+                'input[inputmode="numeric"]',
+                'input[pattern*="[0-9]"]',
+                'input[aria-label*="price" i]',
+                'input[aria-label*="Price" i]',
+                'input[id*="price" i]',
+                'input[class*="price" i]',
+            ]
+            
+            for selector in expanded_price_selectors:
                 try:
-                    price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                    price_field = await page.wait_for_selector(selector, timeout=2000, state="visible")
                     if price_field:
-                        await price_field.click()
-                        await price_field.fill("")
-                        await price_field.fill(price)
-                        print(f">>> ✓ Filled price on next step with selector: {selector}")
-                        price_filled = True
-                        break
+                        # Check if field is actually visible and enabled
+                        is_visible = await price_field.is_visible()
+                        is_enabled = await price_field.is_enabled()
+                        if is_visible and is_enabled:
+                            # Scroll into view
+                            await price_field.scroll_into_view_if_needed()
+                            await asyncio.sleep(0.5)
+                            
+                            # Clear and fill
+                            await price_field.click()
+                            await price_field.fill("")
+                            await asyncio.sleep(0.3)
+                            await price_field.fill(price)
+                            await asyncio.sleep(0.3)
+                            
+                            # Verify it was filled
+                            filled_value = await price_field.input_value()
+                            print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
+                            price_filled = True
+                            break
                 except:
                     continue
             
+            # If still not filled, try using JavaScript
+            if not price_filled:
+                print(f">>> Trying to fill price via JavaScript...")
+                try:
+                    filled = await page.evaluate(f"""
+                        () => {{
+                            const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[inputmode="numeric"]'));
+                            for (const inp of inputs) {{
+                                const placeholder = (inp.placeholder || '').toLowerCase();
+                                const name = (inp.name || '').toLowerCase();
+                                const id = (inp.id || '').toLowerCase();
+                                if (placeholder.includes('price') || name.includes('price') || id.includes('price')) {{
+                                    inp.value = '{price}';
+                                    inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}
+                    """)
+                    if filled:
+                        print(f">>> ✓ Filled price via JavaScript")
+                        price_filled = True
+                except Exception as e:
+                    print(f">>> Could not fill price via JavaScript: {e}")
+            
             # Look for final publish button (regardless of whether price was filled)
             print(f">>> Looking for final publish button...")
+            
+            # First, debug what buttons are available on the page
+            try:
+                all_buttons = await page.query_selector_all('button')
+                button_info = []
+                for btn in all_buttons[:20]:  # Check first 20 buttons
+                    try:
+                        text = await btn.inner_text()
+                        btn_type = await btn.get_attribute("type")
+                        btn_class = await btn.get_attribute("class")
+                        is_visible = await btn.is_visible()
+                        if is_visible:
+                            button_info.append({
+                                "text": text.strip() if text else "",
+                                "type": btn_type,
+                                "class": btn_class[:50] if btn_class else "",
+                            })
+                    except:
+                        pass
+                print(f">>> Available buttons on page: {button_info}")
+            except Exception as e:
+                print(f">>> Could not get button info: {e}")
+            
             final_publish_btn = None
             final_publish_selectors = [
                 'button:has-text("List")',
                 'button:has-text("List Item")',
                 'button:has-text("Publish")',
+                'button:has-text("List for Sale")',
                 'button[type="submit"]',
+                'button[data-testid*="submit"]',
+                'button[data-testid*="publish"]',
+                'button[data-testid*="list"]',
             ]
             
             for selector in final_publish_selectors:
                 try:
-                    final_publish_btn = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                    final_publish_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
                     if final_publish_btn:
                         btn_text = await final_publish_btn.inner_text()
-                        print(f">>> ✓ Found final publish button: {btn_text}")
+                        print(f">>> ✓ Found final publish button with selector '{selector}': {btn_text}")
                         # Close modals again
                         try:
                             await page.keyboard.press('Escape')
@@ -754,8 +858,107 @@ async def publish_listing_to_poshmark(
                 except:
                     continue
             
+            # If selector-based search failed, try finding by text content
+            if not final_publish_btn:
+                print(f">>> Trying to find button by text content...")
+                try:
+                    all_buttons = await page.query_selector_all('button')
+                    for btn in all_buttons:
+                        try:
+                            text = await btn.inner_text()
+                            if text and any(keyword in text for keyword in ["List", "Publish", "List for Sale", "List Item"]):
+                                is_visible = await btn.is_visible()
+                                if is_visible:
+                                    print(f">>> ✓ Found button by text: '{text}'")
+                                    final_publish_btn = btn
+                                    # Close modals
+                                    try:
+                                        await page.keyboard.press('Escape')
+                                        await asyncio.sleep(0.5)
+                                    except:
+                                        pass
+                                    
+                                    try:
+                                        await final_publish_btn.click(timeout=5000)
+                                        print(">>> Clicked final publish button")
+                                    except Exception as e:
+                                        if "intercepts" in str(e).lower() or "modal" in str(e).lower():
+                                            print(f">>> Modal intercepted, using JavaScript click...")
+                                            await final_publish_btn.evaluate("button => button.click()")
+                                            print(">>> Clicked final publish button via JavaScript")
+                                        else:
+                                            raise
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f">>> Error finding button by text: {e}")
+            
             if not final_publish_btn:
                 print(f">>> ⚠ Warning: Could not find final publish button after clicking Next")
+                
+                # Check for validation errors or required fields
+                try:
+                    # Check for required field indicators
+                    required_fields = await page.query_selector_all('[required], [aria-required="true"], .required, [class*="required"]')
+                    if required_fields:
+                        print(f">>> Found {len(required_fields)} required fields")
+                        for field in required_fields[:5]:
+                            try:
+                                field_name = await field.get_attribute("name") or await field.get_attribute("placeholder") or await field.get_attribute("id")
+                                field_value = await field.input_value() if await field.is_visible() else None
+                                print(f">>> Required field: {field_name}, value: {field_value}")
+                            except:
+                                pass
+                    
+                    # Check for validation error messages
+                    error_messages = await page.query_selector_all('.error, .error-message, [role="alert"], [class*="error"], [class*="validation"]')
+                    if error_messages:
+                        print(f">>> Found {len(error_messages)} error/validation messages")
+                        for err in error_messages[:5]:
+                            try:
+                                text = await err.inner_text()
+                                if text and text.strip():
+                                    print(f">>> Error message: {text.strip()[:100]}")
+                            except:
+                                pass
+                    
+                    # Scroll down to see if button is below the fold
+                    print(f">>> Scrolling to find button...")
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(1)
+                    
+                    # Try finding button again after scrolling
+                    all_buttons = await page.query_selector_all('button')
+                    for btn in all_buttons:
+                        try:
+                            text = await btn.inner_text()
+                            if text and any(keyword in text for keyword in ["List", "Publish", "List for Sale"]):
+                                is_visible = await btn.is_visible()
+                                if is_visible:
+                                    print(f">>> ✓ Found button after scrolling: '{text}'")
+                                    final_publish_btn = btn
+                                    try:
+                                        await final_publish_btn.click(timeout=5000)
+                                        print(">>> Clicked final publish button")
+                                    except Exception as e:
+                                        if "intercepts" in str(e).lower():
+                                            await final_publish_btn.evaluate("button => button.click()")
+                                            print(">>> Clicked final publish button via JavaScript")
+                                        else:
+                                            raise
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f">>> Error checking for validation: {e}")
+                
+                # Take a screenshot for debugging
+                try:
+                    await page.screenshot(path="/tmp/no_final_button.png")
+                    print(f">>> Screenshot saved to /tmp/no_final_button.png")
+                except:
+                    pass
         
         # Wait for navigation to listing page or success confirmation
         print(f">>> Waiting for publish to complete...")
