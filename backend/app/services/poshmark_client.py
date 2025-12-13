@@ -818,23 +818,37 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 print(f">>> Navigating to closet page...")
                 closet_url = f"https://poshmark.com/closet/{actual_username}"
                 try:
-                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=30000)
-                    # 짧은 대기 후 즉시 추출 시도 (동적 로딩 대기)
-                    await asyncio.sleep(3)  # 3초 대기로 동적 콘텐츠 로딩 허용
+                    await page.goto(closet_url, wait_until="domcontentloaded", timeout=20000)
+                    print(f">>> Page loaded, waiting for content...")
+                    
+                    # Wait for any listing links or tiles to appear (with timeout)
+                    try:
+                        await page.wait_for_selector('a[href*="/listing/"]', timeout=5000, state="attached")
+                        print(">>> Found listing links on page")
+                    except:
+                        print(">>> No listing links found immediately, continuing...")
+                    
+                    # Short wait for dynamic content
+                    await asyncio.sleep(1)
                 except PlaywrightTimeoutError:
                     print(">>> Warning: Page load timeout, but continuing with extraction...")
-                    # 타임아웃이 발생해도 계속 진행
                 
                 print(f">>> Extracting listings from closet...")
                 
-                # Scroll to load dynamic content
-                try:
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await asyncio.sleep(1)
-                    await page.evaluate("window.scrollTo(0, 0)")
-                    await asyncio.sleep(1)
-                except:
-                    pass
+                # Debug: Check what's actually on the page
+                page_info = await page.evaluate("""
+                    () => {
+                        const links = document.querySelectorAll('a[href*="/listing/"]');
+                        const tiles = document.querySelectorAll('[class*="tile"], [class*="card"], article');
+                        return {
+                            listingLinks: links.length,
+                            tiles: tiles.length,
+                            pageTitle: document.title,
+                            bodyText: document.body.innerText.substring(0, 200)
+                        };
+                    }
+                """)
+                print(f">>> Page info: {page_info}")
                 
                 items = await page.evaluate(r"""
                     () => {
@@ -845,14 +859,43 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         const allListingLinks = Array.from(document.querySelectorAll('a[href*="/listing/"]'));
                         console.log('Found', allListingLinks.length, 'listing links');
                         
-                        allListingLinks.forEach((link, index) => {
+                        // Also try finding by data attributes and other patterns
+                        const altLinks = Array.from(document.querySelectorAll('[href*="/listing/"], [data-listing-id], [data-item-id]'));
+                        console.log('Found', altLinks.length, 'alternative listing elements');
+                        
+                        // Combine all potential links
+                        const allLinks = [...new Set([...allListingLinks, ...altLinks])];
+                        console.log('Total unique links:', allLinks.length);
+                        
+                        allLinks.forEach((link, index) => {
                             try {
                                 let url = link.href || link.getAttribute('href') || '';
                                 if (!url) return;
                                 
+                                // Handle different URL formats
+                                if (!url) {
+                                    // Try to get from data attributes
+                                    url = link.getAttribute('data-href') || 
+                                           link.getAttribute('data-url') ||
+                                           link.getAttribute('href') || '';
+                                }
+                                
                                 // Make absolute URL if relative
-                                if (url.startsWith('/')) {
+                                if (url && url.startsWith('/')) {
                                     url = 'https://poshmark.com' + url;
+                                }
+                                
+                                if (!url || !url.includes('/listing/')) {
+                                    // Try parent link
+                                    const parentLink = link.closest('a[href*="/listing/"]');
+                                    if (parentLink) {
+                                        url = parentLink.href || parentLink.getAttribute('href') || '';
+                                        if (url && url.startsWith('/')) {
+                                            url = 'https://poshmark.com' + url;
+                                        }
+                                    } else {
+                                        return; // Skip if no valid URL
+                                    }
                                 }
                                 
                                 // Skip if we've seen this URL
@@ -949,12 +992,23 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 print(f">>> Found {len(items)} items")
                 
                 if len(items) == 0:
-                    # 디버깅을 위해 스크린샷 저장
+                    # Enhanced debugging
                     try:
-                        await page.screenshot(path="/tmp/poshmark_closet_empty.png", full_page=True)
-                        print(">>> Screenshot saved to /tmp/poshmark_closet_empty.png for debugging")
-                    except:
-                        pass
+                        # Get more page info
+                        debug_info = await page.evaluate("""
+                            () => {
+                                return {
+                                    allLinks: document.querySelectorAll('a').length,
+                                    listingLinks: document.querySelectorAll('a[href*="/listing/"]').length,
+                                    images: document.querySelectorAll('img').length,
+                                    bodyText: document.body.innerText.substring(0, 500)
+                                };
+                            }
+                        """)
+                        print(f">>> Debug info: {debug_info}")
+                    except Exception as e:
+                        print(f">>> Debug info collection failed: {e}")
+                    
                     print(">>> Warning: No items found. The page structure may have changed.")
                 
                 return items
