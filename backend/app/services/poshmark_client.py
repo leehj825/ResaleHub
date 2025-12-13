@@ -826,70 +826,111 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     # 타임아웃이 발생해도 계속 진행
                 
                 print(f">>> Extracting listings from closet...")
+                
+                # Scroll to load dynamic content
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(1)
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await asyncio.sleep(1)
+                except:
+                    pass
+                
                 items = await page.evaluate(r"""
                     () => {
                         const items = [];
-                        // 다양한 선택자 시도
-                        const selectors = [
-                            '.tile',
-                            '.listing-tile',
-                            '[class*="tile"]',
-                            '[class*="listing"]',
-                            'div[data-testid*="listing"]',
-                            'a[href*="/listing/"]'
-                        ];
+                        const seenUrls = new Set();
                         
-                        let cards = [];
-                        for (const selector of selectors) {
-                            cards = document.querySelectorAll(selector);
-                            if (cards.length > 0) {
-                                console.log('Found items with selector:', selector);
-                                break;
-                            }
-                        }
+                        // Method 1: Find all links with /listing/ in href (most reliable)
+                        const allListingLinks = Array.from(document.querySelectorAll('a[href*="/listing/"]'));
+                        console.log('Found', allListingLinks.length, 'listing links');
                         
-                        if (cards.length === 0) {
-                            // Fallback: 모든 링크에서 /listing/ 찾기
-                            const allLinks = document.querySelectorAll('a[href*="/listing/"]');
-                            cards = Array.from(allLinks).map(link => link.closest('div') || link.parentElement).filter(Boolean);
-                        }
-                        
-                        cards.forEach((card, index) => {
+                        allListingLinks.forEach((link, index) => {
                             try {
-                                const linkEl = card.querySelector('a[href*="/listing/"]') || card.closest('a[href*="/listing/"]') || (card.tagName === 'A' && card.href.includes('/listing/') ? card : null);
-                                if (!linkEl) return;
+                                let url = link.href || link.getAttribute('href') || '';
+                                if (!url) return;
                                 
-                                const url = linkEl.href || linkEl.getAttribute('href');
-                                if (!url || !url.includes('/listing/')) return;
-                                
-                                const titleEl = card.querySelector('.title, [class*="title"], h3, h4, .item-title') || linkEl;
-                                let title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
-                                if (!title) {
-                                    // URL에서 추출 시도
-                                    const urlMatch = url.match(/\/listing\/([^\/]+)/);
-                                    title = urlMatch ? urlMatch[1].replace(/-/g, ' ') : `Item ${index + 1}`;
+                                // Make absolute URL if relative
+                                if (url.startsWith('/')) {
+                                    url = 'https://poshmark.com' + url;
                                 }
                                 
-                                const priceEl = card.querySelector('.price, .amount, [class*="price"], [class*="amount"]');
-                                let price = 0;
-                                if (priceEl) {
-                                    const priceText = priceEl.innerText || priceEl.textContent || '';
-                                    const priceMatch = priceText.match(/[\d.]+/);
-                                    if (priceMatch) {
-                                        price = parseFloat(priceMatch[0]);
+                                // Skip if we've seen this URL
+                                if (seenUrls.has(url)) return;
+                                seenUrls.add(url);
+                                
+                                // Extract listing ID from URL
+                                const listingIdMatch = url.match(/\/listing\/([^\/\?]+)/);
+                                if (!listingIdMatch) return;
+                                const listingId = listingIdMatch[1];
+                                
+                                // Find the card/container element
+                                let card = link;
+                                let parent = link.parentElement;
+                                let attempts = 0;
+                                while (parent && attempts < 5) {
+                                    if (parent.tagName === 'ARTICLE' || 
+                                        parent.classList.contains('tile') ||
+                                        parent.classList.contains('card') ||
+                                        parent.querySelector('img')) {
+                                        card = parent;
+                                        break;
+                                    }
+                                    parent = parent.parentElement;
+                                    attempts++;
+                                }
+                                
+                                // Extract title
+                                let title = '';
+                                const titleSelectors = [
+                                    '.title', '[class*="title"]', 'h3', 'h4', 
+                                    '.item-title', '[data-testid*="title"]',
+                                    'span[class*="title"]', 'div[class*="title"]'
+                                ];
+                                
+                                for (const selector of titleSelectors) {
+                                    const titleEl = card.querySelector(selector) || link.querySelector(selector);
+                                    if (titleEl) {
+                                        title = (titleEl.innerText || titleEl.textContent || '').trim();
+                                        if (title) break;
                                     }
                                 }
                                 
-                                const imgEl = card.querySelector('img');
-                                const imageUrl = imgEl ? (imgEl.src || imgEl.getAttribute('src') || '') : '';
+                                // Fallback: extract from URL
+                                if (!title) {
+                                    title = listingId.replace(/-/g, ' ').replace(/_/g, ' ');
+                                }
                                 
-                                // URL에서 listing ID 추출
-                                const listingIdMatch = url.match(/\/listing\/([^\/\?]+)/);
-                                const listingId = listingIdMatch ? listingIdMatch[1] : `poshmark-${index}`;
+                                // Extract price
+                                let price = 0;
+                                const priceSelectors = [
+                                    '.price', '.amount', '[class*="price"]', 
+                                    '[class*="amount"]', '[data-testid*="price"]',
+                                    'span[class*="price"]', 'div[class*="price"]'
+                                ];
                                 
-                                items.push({ 
-                                    title: title || `Item ${index + 1}`, 
-                                    price: price || 0, 
+                                for (const selector of priceSelectors) {
+                                    const priceEl = card.querySelector(selector) || link.querySelector(selector);
+                                    if (priceEl) {
+                                        const priceText = (priceEl.innerText || priceEl.textContent || '').trim();
+                                        const priceMatch = priceText.match(/[\d.]+/);
+                                        if (priceMatch) {
+                                            price = parseFloat(priceMatch[0]);
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Extract image
+                                let imageUrl = '';
+                                const imgEl = card.querySelector('img') || link.querySelector('img');
+                                if (imgEl) {
+                                    imageUrl = imgEl.src || imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '';
+                                }
+                                
+                                items.push({
+                                    title: title || `Item ${index + 1}`,
+                                    price: price || 0,
                                     url: url,
                                     imageUrl: imageUrl || '',
                                     sku: `poshmark-${listingId}`,
@@ -900,6 +941,7 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                             }
                         });
                         
+                        console.log('Extracted', items.length, 'items');
                         return items;
                     }
                 """)
