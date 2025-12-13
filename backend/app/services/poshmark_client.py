@@ -599,14 +599,31 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                         if isinstance(exp_date, (int, float)) and exp_date > current_timestamp:
                             playwright_cookie["expires"] = int(exp_date)
                     
-                    # Handle sameSite (Playwright expects "Strict", "Lax", or "None")
+                    # Handle sameSite (Playwright expects exactly "Strict", "Lax", or "None")
+                    # Chrome can return: "Strict", "Lax", "None", "No_Restriction", "Unspecified", or undefined
+                    # IMPORTANT: Only include sameSite if it's a valid value, otherwise omit it completely
                     same_site = cookie.get("sameSite")
-                    if same_site:
-                        same_site_upper = str(same_site).upper()
-                        if same_site_upper in ["STRICT", "LAX", "NONE"]:
-                            playwright_cookie["sameSite"] = same_site_upper
-                        elif same_site_upper in ["NO_RESTRICTION", "UNSPECIFIED"]:
-                            playwright_cookie["sameSite"] = "None"
+                    
+                    # Only process sameSite if it exists and is not None/empty
+                    if same_site is not None:
+                        same_site_str = str(same_site).strip()
+                        if same_site_str:  # Only process non-empty strings
+                            same_site_upper = same_site_str.upper()
+                            
+                            # Map Chrome values to Playwright values (must be exact: "Strict", "Lax", or "None")
+                            if same_site_upper == "STRICT":
+                                playwright_cookie["sameSite"] = "Strict"
+                            elif same_site_upper == "LAX":
+                                playwright_cookie["sameSite"] = "Lax"
+                            elif same_site_upper in ["NONE", "NO_RESTRICTION", "UNSPECIFIED"]:
+                                playwright_cookie["sameSite"] = "None"
+                            else:
+                                # If it's an invalid value, don't include sameSite (Playwright will use default)
+                                print(f">>> Warning: Unknown sameSite value '{same_site}' (type: {type(same_site)}) for cookie '{name}', omitting")
+                        # If same_site is empty string or whitespace, don't include it
+                    
+                    # Note: We intentionally don't add sameSite if it's invalid/empty
+                    # Playwright will use its default behavior
                     
                     playwright_cookies.append(playwright_cookie)
                 
@@ -617,6 +634,23 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                 
                 if len(playwright_cookies) == 0:
                     raise PoshmarkAuthError("No valid cookies found. All cookies may be expired. Please reconnect your Poshmark account.")
+                
+                # Final safety check: Remove any invalid sameSite values
+                valid_same_site_values = {"Strict", "Lax", "None"}
+                for cookie in playwright_cookies:
+                    if "sameSite" in cookie:
+                        same_site_val = cookie["sameSite"]
+                        if same_site_val not in valid_same_site_values:
+                            print(f">>> WARNING: Removing invalid sameSite value '{same_site_val}' from cookie '{cookie.get('name')}'")
+                            del cookie["sameSite"]
+                
+                # Debug: Log first cookie's sameSite value before adding
+                if len(playwright_cookies) > 0:
+                    first_cookie = playwright_cookies[0]
+                    if "sameSite" in first_cookie:
+                        print(f">>> DEBUG: First cookie '{first_cookie.get('name')}' has sameSite='{first_cookie.get('sameSite')}'")
+                    else:
+                        print(f">>> DEBUG: First cookie '{first_cookie.get('name')}' has no sameSite field")
                 
                 # Add cookies to context
                 await context.add_cookies(playwright_cookies)
