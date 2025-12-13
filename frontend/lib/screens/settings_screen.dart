@@ -8,7 +8,6 @@ import '../services/marketplace_service.dart';
 import '../services/auth_service.dart';
 import 'ebay_inventory_screen.dart';
 import 'poshmark_inventory_screen.dart';
-import 'poshmark_webview_screen.dart';
 import 'desktop_connection_screen.dart'; // Desktop-to-Cloud pairing flow
 
 class SettingsScreen extends StatefulWidget {
@@ -133,108 +132,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // [UPDATED] Poshmark 연결
+  // Desktop-to-Cloud pairing flow (Chrome Extension)
   Future<void> _connectPoshmark() async {
-    try {
-      final connectUrl = await _marketplaceService.getPoshmarkConnectUrl();
-      final uri = Uri.parse(connectUrl);
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => const DesktopConnectionScreen(),
+      ),
+    );
 
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        throw Exception('Could not launch $connectUrl');
-      }
-
-      // Show a progress dialog while we poll the backend for connection status
-      bool cancelled = false;
-      bool dialogOpen = true;
-      
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogCtx) {
-          return WillPopScope(
-            onWillPop: () async => false,
-            child: AlertDialog(
-              title: const Text('Waiting for Poshmark connection'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  SizedBox(height: 12),
-                  CircularProgressIndicator(),
-                  SizedBox(height: 12),
-                  Text('After signing in on the browser, return here — we will detect the connection automatically.'),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    cancelled = true;
-                    dialogOpen = false;
-                    Navigator.of(dialogCtx).pop();
-                  },
-                  child: const Text('Cancel'),
-                ),
-              ],
-            ),
-          );
-        },
-      );
-
-      // Poll for up to 2 minutes
-      final deadline = DateTime.now().add(const Duration(minutes: 2));
-      bool connected = false;
-      
-      while (DateTime.now().isBefore(deadline) && !cancelled && !connected && mounted) {
-        await Future.delayed(const Duration(seconds: 2));
-        if (cancelled) break;
-        
-        try {
-          connected = await _marketplaceService.isPoshmarkConnected();
-          if (connected) break;
-        } catch (e) {
-          // ignore transient errors during polling
-          debugPrint('Polling error (ignored): $e');
-        }
-      }
-
-      // Close dialog if still open
-      if (mounted && dialogOpen) {
-        try {
-          Navigator.of(context, rootNavigator: true).pop();
-        } catch (e) {
-          debugPrint('Error closing dialog: $e');
-        }
-      }
-
-      if (!mounted) return;
-
-      // Show appropriate message
-      if (connected) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Poshmark connected!')),
-        );
-      } else if (cancelled) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Connection cancelled')),
-        );
-        // Don't reload status if cancelled - just return
-        return;
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Timed out while waiting for Poshmark connection')),
-        );
-      }
-
-      // Only reload status if not cancelled
-      if (!cancelled && mounted) {
-        await _loadStatus();
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to open connect URL: $e')),
-      );
+    if (result == true && mounted) {
+      // Connection successful, refresh status
+      await _loadStatus();
     }
   }
 
@@ -257,19 +165,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // Desktop-to-Cloud pairing flow
-  Future<void> _connectPoshmarkDesktop() async {
-    final result = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => const DesktopConnectionScreen(),
-      ),
-    );
-
-    if (result == true && mounted) {
-      // Connection successful, refresh status
-      await _loadStatus();
-    }
-  }
 
   Future<void> _testEbayApi() async {
     try {
@@ -396,37 +291,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
             
             Row(
               children: [
-                if (!_poshmarkConnected) ...[
-                  ElevatedButton(
+                if (!_poshmarkConnected)
+                  ElevatedButton.icon(
                     onPressed: _connectPoshmark,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFE31837), // Poshmark brand color
                       foregroundColor: Colors.white,
                     ),
-                    child: const Text('Connect Poshmark (Browser)'),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: _connectPoshmarkDesktop,
                     icon: const Icon(Icons.desktop_windows),
-                    label: const Text('Desktop Extension'),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFFE31837)),
-                    ),
+                    label: const Text('Connect'),
                   ),
-                ],
                 if (_poshmarkConnected) ...[
                   OutlinedButton(
                     onPressed: _disconnectPoshmark,
                     child: const Text('Disconnect'),
                   ),
                   const SizedBox(width: 8),
-                  OutlinedButton(
+                  OutlinedButton.icon(
                     onPressed: _connectPoshmark,
+                    icon: const Icon(Icons.refresh),
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Color(0xFFE31837)),
                     ),
-                    child: const Text('Re-connect'),
+                    label: const Text('Re-connect'),
                   ),
                 ],
               ],
