@@ -476,11 +476,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-                    context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                    )
-            
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
@@ -589,8 +588,8 @@ async def publish_listing(
                         screenshot_bytes = await page.screenshot(full_page=True)
                         import base64
                         screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                except:
-                    pass
+                    except Exception:
+                        pass
                     raise PoshmarkAuthError(
                         "Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.",
                         screenshot_base64=screenshot_base64
