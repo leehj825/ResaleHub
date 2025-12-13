@@ -295,38 +295,104 @@ async def publish_listing_to_poshmark(
     """
     try:
         print(f">>> Navigating to Poshmark listing page...")
-        listing_url = "https://poshmark.com/listing/new"
+        # Try multiple possible URLs for listing creation
+        listing_urls = [
+            "https://poshmark.com/listing/new",
+            "https://poshmark.com/list-item",
+            "https://poshmark.com/sell",
+        ]
         
-        try:
-            await page.goto(listing_url, wait_until="load", timeout=30000)
-            
-            # [CRITICAL FIX] 폼 요소가 없으면 실패 처리 (Blind Bot 방지)
+        listing_url = None
+        page_loaded = False
+        
+        for url in listing_urls:
             try:
-                await page.wait_for_selector(
-                    'input[type="file"], input[name*="title" i]',
-                    timeout=15000,
-                    state="attached"
-                )
-            except PlaywrightTimeoutError:
-                # 봇 탐지 화면인지 확인
-                if await page.query_selector("text=Pardon the interruption"):
-                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                print(f">>> Trying URL: {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                current_url = page.url.lower()
+                page_title = await page.title()
                 
-                # 스크린샷 저장
-                screenshot_path = "/tmp/debug_failed_form_load.png"
-                await page.screenshot(path=screenshot_path)
-                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                print(f">>> Current URL after navigation: {page.url}")
+                print(f">>> Page title: {page_title}")
                 
-                # 페이지 소스 일부 로깅
-                content = await page.content()
-                print(f">>> Page content sample: {content[:500]}")
+                # Check if we got redirected to a 404 or error page
+                if "not found" in page_title.lower() or "404" in current_url or "error" in page_title.lower():
+                    print(f">>> URL {url} returned error page, trying next...")
+                    continue
                 
-                raise PoshmarkPublishError("Could not find listing form elements. Likely blocked or page layout changed.")
+                # Check if we're on a login page (shouldn't happen if cookies are valid)
+                if "login" in current_url or "sign-in" in current_url:
+                    raise PoshmarkPublishError("Redirected to login page. Cookies may be invalid.")
                 
-        except Exception as e:
-            if isinstance(e, PoshmarkPublishError):
-                raise
-            raise PoshmarkPublishError(f"Could not access Poshmark listing page: {str(e)}")
+                listing_url = url
+                page_loaded = True
+                break
+                
+            except Exception as e:
+                print(f">>> Error navigating to {url}: {e}")
+                continue
+        
+        if not page_loaded or not listing_url:
+            # Try the most common URL one more time with better error handling
+            try:
+                await page.goto("https://poshmark.com/listing/new", wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)  # Wait for page to fully load
+                
+                current_url = page.url.lower()
+                page_title = await page.title()
+                
+                if "not found" in page_title.lower() or "404" in current_url:
+                    # Check if there's a "Sell" or "List Item" link we can use
+                    sell_link = await page.query_selector('a[href*="/list"], a[href*="/sell"], a[href*="/listing/new"]')
+                    if sell_link:
+                        href = await sell_link.get_attribute("href")
+                        if href:
+                            if href.startswith("/"):
+                                href = "https://poshmark.com" + href
+                            print(f">>> Found alternative link: {href}")
+                            await page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                            await asyncio.sleep(2)
+                else:
+                    listing_url = "https://poshmark.com/listing/new"
+                    page_loaded = True
+            except Exception as e:
+                print(f">>> Final navigation attempt failed: {e}")
+        
+        if not page_loaded:
+            screenshot_path = "/tmp/debug_failed_navigation.png"
+            await page.screenshot(path=screenshot_path)
+            content = await page.content()
+            print(f">>> Failed to load listing page. Screenshot: {screenshot_path}")
+            print(f">>> Page URL: {page.url}")
+            print(f">>> Page title: {await page.title()}")
+            print(f">>> Page content sample: {content[:1000]}")
+            raise PoshmarkPublishError(f"Could not access Poshmark listing creation page. Current URL: {page.url}, Title: {await page.title()}")
+
+        print(f">>> Looking for listing form elements...")
+        try:
+            await page.wait_for_selector(
+                'input[type="file"], input[name*="title" i], textarea[name*="description" i], [data-testid*="title"]',
+                timeout=10000,
+                state="attached"
+            )
+            print(f">>> ✓ Found listing form elements")
+        except PlaywrightTimeoutError:
+            # 봇 탐지 화면인지 확인
+            page_content = await page.content()
+            if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
+                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+            
+            # 스크린샷 저장
+            screenshot_path = "/tmp/debug_failed_form_load.png"
+            await page.screenshot(path=screenshot_path)
+            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+            print(f">>> Current URL: {page.url}")
+            print(f">>> Page title: {await page.title()}")
+            
+            # 페이지 소스 일부 로깅
+            print(f">>> Page content sample: {page_content[:1000]}")
+            
+            raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
         
         # 2. 이미지 업로드 (리소스 차단을 피하기 위해 이 부분은 주의 필요)
         if listing_images:
@@ -555,15 +621,22 @@ async def publish_listing(
             
             page = await context.new_page()
             
-            # 3. 리소스 차단 적용 (이미지만 차단, 스크립트는 허용)
-            async def selective_block(route):
+            # 3. 리소스 차단 적용 (발행 시에는 이미지만 차단, 스크립트는 허용)
+            # 발행 페이지는 동적 콘텐츠가 필요하므로 스크립트는 허용
+            async def selective_block_publish(route):
                 resource_type = route.request.resource_type
+                url = route.request.url.lower()
+                
+                # 이미지, 폰트, 미디어는 차단
                 if resource_type in ["image", "font", "media"]:
+                    await route.abort()
+                # 광고/추적 스크립트만 차단 (필수 스크립트는 허용)
+                elif resource_type == "script" and any(domain in url for domain in ["google-analytics", "googletagmanager", "facebook", "doubleclick", "adservice"]):
                     await route.abort()
                 else:
                     await route.continue_()
             
-            await page.route("**/*", selective_block)
+            await page.route("**/*", selective_block_publish)
             log("Resource blocking configured")
             
             try:
