@@ -589,8 +589,8 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
                 const bmLink = document.getElementById('bmLink');
                 if (bmCodeEl) bmCodeEl.value = bm;
                 if (bmLink) {{
-                    bmLink.setAttribute('href', bm);
-                    bmLink.setAttribute('title', 'Drag this to your bookmarks bar or click while on poshmark.com');
+                bmLink.setAttribute('href', bm);
+                bmLink.setAttribute('title', 'Drag this to your bookmarks bar or click while on poshmark.com');
                 }}
             }})();
 
@@ -603,7 +603,7 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
                         console.log('Processing cookies, length:', data.cookies.length);
                         const textarea = document.getElementById('cookieString');
                         if (textarea) {{
-                            textarea.value = data.cookies;
+                        textarea.value = data.cookies;
                             // Show success message
                             const successMsg = document.createElement('div');
                             successMsg.style.cssText = 'background:#4CAF50;color:white;padding:8px;margin:8px 0;border-radius:4px;';
@@ -613,8 +613,8 @@ def poshmark_connect_form(request: Request, token: str, db: Session = Depends(ge
                                 form.parentNode.insertBefore(successMsg, form);
                                 setTimeout(function(){{successMsg.remove();}},5000);
                             }}
-                            // Optionally auto-submit
-                            const auto = document.getElementById('autoSubmit');
+                        // Optionally auto-submit
+                        const auto = document.getElementById('autoSubmit');
                             if (auto && auto.checked && form) {{
                                 setTimeout(function(){{form.submit();}},500);
                             }}
@@ -965,7 +965,8 @@ async def poshmark_inventory(
     Start Poshmark inventory fetch in background and return job_id.
     Use /poshmark/inventory-progress/{job_id} to get progress updates.
     """
-    from app.services.poshmark_client import get_poshmark_inventory
+    from app.services.poshmark_client import get_poshmark_inventory, get_poshmark_cookies, PoshmarkAuthError
+    from app.models.marketplace_account import MarketplaceAccount
     from datetime import datetime
     
     import sys
@@ -978,7 +979,80 @@ async def poshmark_inventory(
     print(f">>> [INVENTORY] User email: {current_user.email}", flush=True)
     sys.stdout.flush()
     
-    # Create job_id
+    # STEP 1: Check for credentials BEFORE starting background task
+    print(f">>> [INVENTORY] Checking for Poshmark credentials for user {current_user.id}...", flush=True)
+    sys.stdout.flush()
+    
+    try:
+        # Query database for Poshmark credentials
+        account = (
+            db.query(MarketplaceAccount)
+            .filter(
+                MarketplaceAccount.user_id == current_user.id,
+                MarketplaceAccount.marketplace == "poshmark",
+            )
+            .first()
+        )
+        
+        if not account:
+            print(f">>> [INVENTORY] ERROR: No Poshmark account found for user {current_user.id}", flush=True)
+            sys.stdout.flush()
+            raise HTTPException(
+                status_code=404,
+                detail="Poshmark account not connected. Please connect your Poshmark account first."
+            )
+        
+        print(f">>> [INVENTORY] Found MarketplaceAccount record: id={account.id}, username={account.username}", flush=True)
+        sys.stdout.flush()
+        
+        # Check if credentials are configured
+        if not account.access_token:
+            print(f">>> [INVENTORY] ERROR: Poshmark credentials not configured (access_token is empty)", flush=True)
+            sys.stdout.flush()
+            raise HTTPException(
+                status_code=400,
+                detail="Poshmark credentials not configured. Please reconnect your Poshmark account."
+            )
+        
+        # Verify credentials can be parsed (for cookie-based auth)
+        try:
+            import json
+            cookies = json.loads(account.access_token)
+            if not isinstance(cookies, list):
+                print(f">>> [INVENTORY] ERROR: Invalid cookie format in database", flush=True)
+                sys.stdout.flush()
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Poshmark credentials format. Please reconnect your Poshmark account."
+                )
+            print(f">>> [INVENTORY] ✓ Credentials validated: {len(cookies)} cookies found", flush=True)
+        except json.JSONDecodeError as e:
+            print(f">>> [INVENTORY] ERROR: Failed to parse credentials JSON: {e}", flush=True)
+            sys.stdout.flush()
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to parse Poshmark credentials. Please reconnect your Poshmark account."
+            )
+        
+        # Get username (for logging)
+        username = account.username or "Connected Account"
+        print(f">>> [INVENTORY] ✓ Found credentials for user: {username}", flush=True)
+        sys.stdout.flush()
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (these are expected errors)
+        raise
+    except Exception as e:
+        print(f">>> [INVENTORY] ERROR: Unexpected error checking credentials: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking Poshmark credentials: {str(e)}"
+        )
+    
+    # STEP 2: Create job_id and start background task
     job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
     progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
     
@@ -986,8 +1060,15 @@ async def poshmark_inventory(
     sys.stdout.flush()
     
     async def _run_inventory_task():
+        import sys
         try:
-            print(f">>> [INVENTORY] Background task started for job_id: {job_id}")
+            print(f">>> [INVENTORY] Background task started for job_id: {job_id}", flush=True)
+            sys.stdout.flush()
+            
+            # Log credential retrieval attempt
+            print(f">>> [INVENTORY] Retrieving credentials for user {current_user.id}...", flush=True)
+            sys.stdout.flush()
+            
             items = await get_poshmark_inventory(
                 db=db,
                 user=current_user,
@@ -996,18 +1077,21 @@ async def poshmark_inventory(
             )
             result_data = {"items": items, "total": len(items)}
             progress_tracker.set_status(job_id, "completed", f"✓ Inventory loaded: {len(items)} items", result=result_data)
-            print(f">>> [INVENTORY] Background task completed for job_id: {job_id}, items: {len(items)}")
+            print(f">>> [INVENTORY] Background task completed for job_id: {job_id}, items: {len(items)}", flush=True)
+            sys.stdout.flush()
         except PoshmarkAuthError as e:
             error_detail = {"detail": str(e)}
             if e.screenshot_base64:
                 error_detail["screenshot"] = e.screenshot_base64
             progress_tracker.set_status(job_id, "failed", str(e), level="error", result=error_detail)
-            print(f">>> [INVENTORY] Background task failed (AuthError) for job_id: {job_id}: {str(e)}")
+            print(f">>> [INVENTORY] Background task failed (AuthError) for job_id: {job_id}: {str(e)}", flush=True)
+            sys.stdout.flush()
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
-            print(f">>> [INVENTORY] ERROR in background task for job_id: {job_id}")
-            print(f">>> [INVENTORY] Error trace: {error_trace}")
+            print(f">>> [INVENTORY] ERROR in background task for job_id: {job_id}", flush=True)
+            print(f">>> [INVENTORY] Error trace: {error_trace}", flush=True)
+            sys.stdout.flush()
             progress_tracker.set_status(job_id, "failed", f"Failed to fetch inventory: {str(e)}", level="error")
     
     try:

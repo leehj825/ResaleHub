@@ -66,6 +66,10 @@ async def get_poshmark_cookies(db: Session, user: User) -> tuple[str, list]:
     DB에서 Poshmark 쿠키 정보 조회
     Returns: (username, cookies_list)
     """
+    import sys
+    print(f">>> [CREDENTIALS] Retrieving Poshmark credentials for user {user.id}...", flush=True)
+    sys.stdout.flush()
+    
     account = (
         db.query(MarketplaceAccount)
         .filter(
@@ -75,18 +79,36 @@ async def get_poshmark_cookies(db: Session, user: User) -> tuple[str, list]:
         .first()
     )
 
-    if not account or not account.access_token:
+    if not account:
+        print(f">>> [CREDENTIALS] ERROR: No MarketplaceAccount found for user {user.id}, marketplace='poshmark'", flush=True)
+        sys.stdout.flush()
         raise PoshmarkAuthError("Poshmark account not connected")
+    
+    print(f">>> [CREDENTIALS] Found MarketplaceAccount: id={account.id}, username={account.username}", flush=True)
+    sys.stdout.flush()
+    
+    if not account.access_token:
+        print(f">>> [CREDENTIALS] ERROR: access_token is empty for account id={account.id}", flush=True)
+        sys.stdout.flush()
+        raise PoshmarkAuthError("Poshmark credentials not configured")
 
     # access_token 필드에 JSON 형태로 쿠키가 저장되어 있음
     try:
+        print(f">>> [CREDENTIALS] Parsing access_token (length: {len(account.access_token)})...", flush=True)
+        sys.stdout.flush()
         cookies = json.loads(account.access_token)
         if not isinstance(cookies, list):
+            print(f">>> [CREDENTIALS] ERROR: Parsed cookies is not a list, type: {type(cookies)}", flush=True)
+            sys.stdout.flush()
             raise PoshmarkAuthError("Invalid cookie format in database")
         
         username = account.username or "Connected Account"
+        print(f">>> [CREDENTIALS] ✓ Successfully retrieved credentials for user: {username} ({len(cookies)} cookies)", flush=True)
+        sys.stdout.flush()
         return username, cookies
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f">>> [CREDENTIALS] ERROR: Failed to parse JSON: {e}", flush=True)
+        sys.stdout.flush()
         raise PoshmarkAuthError("Failed to parse cookies from database")
 
 
@@ -477,12 +499,12 @@ async def publish_listing_to_poshmark(
                 # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
-                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-            
-            # 스크린샷 저장
-            screenshot_path = "/tmp/debug_failed_form_load.png"
-            await page.screenshot(path=screenshot_path)
-            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                
+                # 스크린샷 저장
+                screenshot_path = "/tmp/debug_failed_form_load.png"
+                await page.screenshot(path=screenshot_path)
+                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
             print(f">>> Current URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
             
@@ -1000,7 +1022,7 @@ async def publish_listing_to_poshmark(
         for attempt in range(max_retries):
             try:
                 await publish_btn.click(timeout=5000, force=True)
-                print(">>> Clicked publish button")
+        print(">>> Clicked publish button")
                 break
             except Exception as click_error:
                 if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
@@ -1575,7 +1597,7 @@ async def publish_listing_to_poshmark(
             if "/listing/" in current_url and "/create-listing" not in current_url:
                 print(f">>> ✓ Redirected to listing page: {current_url}")
                 # Extract listing ID
-                parts = current_url.split("/")
+             parts = current_url.split("/")
                 listing_id = parts[-1].split("-")[-1] if parts else None
                 print(f">>> Extracted listing ID: {listing_id}")
                 break
@@ -1800,10 +1822,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            )
+                    context = await browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
