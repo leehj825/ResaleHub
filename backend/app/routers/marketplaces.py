@@ -1069,6 +1069,10 @@ async def poshmark_inventory(
             print(f">>> [INVENTORY] Retrieving credentials for user {current_user.id}...", flush=True)
             sys.stdout.flush()
             
+            # Handoff logging - right before calling the service
+            print(f">>> [INVENTORY] Calling get_poshmark_inventory service...", flush=True)
+            sys.stdout.flush()
+            
             items = await get_poshmark_inventory(
                 db=db,
                 user=current_user,

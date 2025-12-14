@@ -496,15 +496,15 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-            # 봇 탐지 화면인지 확인
+                # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
-                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
                 
-            # 스크린샷 저장
-            screenshot_path = "/tmp/debug_failed_form_load.png"
-            await page.screenshot(path=screenshot_path)
-            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                # 스크린샷 저장
+                screenshot_path = "/tmp/debug_failed_form_load.png"
+                await page.screenshot(path=screenshot_path)
+                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
             print(f">>> Current URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
             
@@ -1022,7 +1022,7 @@ async def publish_listing_to_poshmark(
         for attempt in range(max_retries):
             try:
                 await publish_btn.click(timeout=5000, force=True)
-                print(">>> Clicked publish button")
+        print(">>> Clicked publish button")
                 break
             except Exception as click_error:
                 if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
@@ -1597,7 +1597,7 @@ async def publish_listing_to_poshmark(
             if "/listing/" in current_url and "/create-listing" not in current_url:
                 print(f">>> ✓ Redirected to listing page: {current_url}")
                 # Extract listing ID
-                parts = current_url.split("/")
+             parts = current_url.split("/")
                 listing_id = parts[-1].split("-")[-1] if parts else None
                 print(f">>> Extracted listing ID: {listing_id}")
                 break
@@ -1822,10 +1822,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            )
+                    context = await browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
@@ -1986,6 +1986,11 @@ async def get_poshmark_inventory(
     """
     import sys
     import time
+    
+    # Service start logging - at the very top
+    print(f">>> [SCRAPER] Service function started. Initializing Playwright...", flush=True)
+    sys.stdout.flush()
+    
     start_time = time.time()
     
     def log(msg, level="info"):
@@ -2005,13 +2010,21 @@ async def get_poshmark_inventory(
     
     try:
         log("Initializing Playwright browser...")
+        print(f">>> [SCRAPER] About to create async_playwright context...", flush=True)
+        sys.stdout.flush()
+        
         async with async_playwright() as p:
             log("Launching Chromium browser...")
+            print(f">>> [SCRAPER] About to launch Chromium with headless=True...", flush=True)
+            sys.stdout.flush()
+            
             browser = await p.chromium.launch(
                 headless=True,
                 args=get_browser_launch_args()
             )
             log("Browser launched, creating context...")
+            print(f">>> [SCRAPER] Browser launched successfully, creating context...", flush=True)
+            sys.stdout.flush()
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -2514,11 +2527,21 @@ async def get_poshmark_inventory(
                 log("Closing browser...")
                 await browser.close()
                 log(f"✓ Complete! Total time: {time.time() - start_time:.1f}s", level="success")
-    except PoshmarkAuthError:
+    except PoshmarkAuthError as e:
+        import traceback
+        print(f">>> [SCRAPER] PoshmarkAuthError caught: {str(e)}", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
         log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
         raise
     except Exception as e:
         import traceback
+        print(f">>> [SCRAPER] Exception caught in get_poshmark_inventory:", flush=True)
+        print(f">>> [SCRAPER] Exception type: {type(e).__name__}", flush=True)
+        print(f">>> [SCRAPER] Exception message: {str(e)}", flush=True)
+        print(f">>> [SCRAPER] Full traceback:", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
         error_details = traceback.format_exc()
         log(f"✗ Error after {time.time() - start_time:.1f}s: {error_details}")
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
