@@ -303,72 +303,35 @@ async def publish_listing_to_poshmark(
     
     try:
         emit_progress("Navigating to Poshmark listing page...")
-        # Try multiple possible URLs for listing creation
-        listing_urls = [
-            "https://poshmark.com/listing/new",
-            "https://poshmark.com/list-item",
-            "https://poshmark.com/sell",
-        ]
+        # Navigate directly to the correct URL (no guessing)
+        listing_url = "https://poshmark.com/create-listing"
         
-        listing_url = None
-        page_loaded = False
-        
-        for url in listing_urls:
-            try:
-                print(f">>> Trying URL: {url}")
-                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                current_url = page.url.lower()
-                page_title = await page.title()
+        try:
+            print(f">>> Navigating to: {listing_url}")
+            await page.goto(listing_url, wait_until="domcontentloaded", timeout=15000)
+            current_url = page.url.lower()
+            page_title = await page.title()
+            
+            print(f">>> Current URL after navigation: {page.url}")
+            print(f">>> Page title: {page_title}")
+            
+            # Check if we got redirected to a 404 or error page
+            if "not found" in page_title.lower() or "404" in current_url or "error" in page_title.lower():
+                screenshot_path = "/tmp/debug_failed_navigation.png"
+                await page.screenshot(path=screenshot_path)
+                raise PoshmarkPublishError(f"Failed to access listing creation page. Got 404/error page. Screenshot: {screenshot_path}")
+            
+            # Check if we're on a login page (shouldn't happen if cookies are valid)
+            if "login" in current_url or "sign-in" in current_url:
+                raise PoshmarkPublishError("Redirected to login page. Cookies may be invalid.")
+            
+            # Verify we're on the create-listing page
+            if "/create-listing" not in current_url:
+                print(f">>> Warning: Expected /create-listing but got: {current_url}")
                 
-                print(f">>> Current URL after navigation: {page.url}")
-                print(f">>> Page title: {page_title}")
-                
-                # Check if we got redirected to a 404 or error page
-                if "not found" in page_title.lower() or "404" in current_url or "error" in page_title.lower():
-                    print(f">>> URL {url} returned error page, trying next...")
-                    continue
-                
-                # Check if we're on a login page (shouldn't happen if cookies are valid)
-                if "login" in current_url or "sign-in" in current_url:
-                    raise PoshmarkPublishError("Redirected to login page. Cookies may be invalid.")
-                
-                listing_url = url
-                page_loaded = True
-                break
-                
-            except Exception as e:
-                print(f">>> Error navigating to {url}: {e}")
-                continue
-        
-        if not page_loaded or not listing_url:
-            # Try the most common URL one more time with better error handling
-            try:
-                await page.goto("https://poshmark.com/listing/new", wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(2)  # Wait for page to fully load
-                
-                current_url = page.url.lower()
-                page_title = await page.title()
-                
-                if "not found" in page_title.lower() or "404" in current_url:
-                    # Check if there's a "Sell" or "List Item" link we can use
-                    sell_link = await page.query_selector('a[href*="/list"], a[href*="/sell"], a[href*="/listing/new"]')
-                    if sell_link:
-                        href = await sell_link.get_attribute("href")
-                        if href:
-                            if href.startswith("/"):
-                                href = "https://poshmark.com" + href
-                            print(f">>> Found alternative link: {href}")
-                            await page.goto(href, wait_until="domcontentloaded", timeout=15000)
-                            await asyncio.sleep(2)
-                            listing_url = href
-                            page_loaded = True
-                else:
-        listing_url = "https://poshmark.com/listing/new"
-                    page_loaded = True
-            except Exception as e:
-                print(f">>> Final navigation attempt failed: {e}")
-        
-        if not page_loaded:
+        except PoshmarkPublishError:
+            raise
+        except Exception as e:
             screenshot_path = "/tmp/debug_failed_navigation.png"
             await page.screenshot(path=screenshot_path)
             content = await page.content()
@@ -376,7 +339,7 @@ async def publish_listing_to_poshmark(
             print(f">>> Page URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
             print(f">>> Page content sample: {content[:1000]}")
-            raise PoshmarkPublishError(f"Could not access Poshmark listing creation page. Current URL: {page.url}, Title: {await page.title()}")
+            raise PoshmarkPublishError(f"Could not access Poshmark listing creation page: {str(e)}. Current URL: {page.url}, Title: {await page.title()}")
 
         # Wait for page to fully load (Vue.js apps need time to render)
         print(f">>> Waiting for page to fully load...")
@@ -442,21 +405,18 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-                # 봇 탐지 화면인지 확인
+            # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
-                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-                
-                
-                # 스크린샷 저장
-                screenshot_path = "/tmp/debug_failed_form_load.png"
-                await page.screenshot(path=screenshot_path)
-                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+            
+            # 스크린샷 저장
+            screenshot_path = "/tmp/debug_failed_form_load.png"
+            await page.screenshot(path=screenshot_path)
+            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
             print(f">>> Current URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
-                
-                # 페이지 소스 일부 로깅
-                
+            
             raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
                 
         print(f">>> ✓ Found {len(found_elements)} form elements")
@@ -555,14 +515,16 @@ async def publish_listing_to_poshmark(
         if not description_filled:
             print(f">>> Warning: Could not fill description field")
         
-        # 가격 - try multiple selectors (price might be on a different step/page)
+        # 가격 - MUST be filled before proceeding
         price = str(int(float(listing.price or 0)))
+        if float(listing.price or 0) <= 0:
+            raise PoshmarkPublishError("Price must be greater than 0")
+        
         price_filled = False
         price_selectors = [
             'input[name*="price" i]',
             'input[placeholder*="price" i]',
             'input[placeholder*="Price" i]',
-            'input[placeholder*="Original Price" i]',
             'input[placeholder*="List Price" i]',
             'input[data-testid*="price"]',
             'input[name="current_price"]',
@@ -570,22 +532,88 @@ async def publish_listing_to_poshmark(
             'input[type="number"]',
             'input[type="text"][inputmode="numeric"]',
         ]
+        
+        # First attempt: fill price on initial form
         for selector in price_selectors:
             try:
-                price_field = await page.wait_for_selector(selector, timeout=2000, state="visible")
+                price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
                 if price_field:
-                    # Clear the field first
-                    await price_field.click()
-                    await price_field.fill("")
-                    await price_field.fill(price)
-                    print(f">>> ✓ Filled price with selector: {selector}")
-                    price_filled = True
-                    # Don't break - might need to fill multiple price fields
-            except:
+                    # Check if field is actually visible and enabled
+                    is_visible = await price_field.is_visible()
+                    is_enabled = await price_field.is_enabled()
+                    if is_visible and is_enabled:
+                        # Scroll into view
+                        await price_field.scroll_into_view_if_needed()
+                        await asyncio.sleep(0.3)
+                        
+                        # Clear and fill
+                        await price_field.click()
+                        await price_field.fill("")
+                        await asyncio.sleep(0.3)
+                        await price_field.fill(price)
+                        await asyncio.sleep(0.3)
+                        
+                        # Verify it was filled
+                        filled_value = await price_field.input_value()
+                        if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                            print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
+                            price_filled = True
+                            break
+            except Exception as e:
+                print(f">>> Price field attempt failed with {selector}: {e}")
                 continue
         
+        # If still not filled, try JavaScript approach
         if not price_filled:
-            print(f">>> Warning: Could not fill price field (might be on next step)")
+            print(f">>> Trying to fill price via JavaScript...")
+            try:
+                filled = await page.evaluate(f"""
+                    () => {{
+                        const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[inputmode="numeric"]'));
+                        for (const inp of inputs) {{
+                            const placeholder = (inp.placeholder || '').toLowerCase();
+                            const name = (inp.name || '').toLowerCase();
+                            const id = (inp.id || '').toLowerCase();
+                            const label = inp.closest('label')?.textContent?.toLowerCase() || '';
+                            if (placeholder.includes('price') || name.includes('price') || id.includes('price') || label.includes('price')) {{
+                                inp.value = '{price}';
+                                inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                const filledValue = inp.value;
+                                return filledValue === '{price}' || filledValue.replace(/[.,]/g, '') === '{price}'.replace(/[.,]/g, '');
+                            }}
+                        }}
+                        return false;
+                    }}
+                """)
+                if filled:
+                    print(f">>> ✓ Filled price via JavaScript")
+                    price_filled = True
+            except Exception as e:
+                print(f">>> Could not fill price via JavaScript: {e}")
+        
+        if not price_filled:
+            # Check for required field validation errors
+            try:
+                required_fields = await page.query_selector_all('[required], [aria-required="true"], .required, [class*="required"]')
+                for field in required_fields:
+                    try:
+                        field_name = await field.get_attribute("name") or await field.get_attribute("placeholder") or await field.get_attribute("id")
+                        field_value = await field.input_value() if await field.is_visible() else None
+                        if "price" in (field_name or "").lower() and (not field_value or field_value.strip() == ""):
+                            print(f">>> ERROR: Required price field is empty: {field_name}")
+                            raise PoshmarkPublishError(f"Failed to fill required price field. Field: {field_name}")
+                    except PoshmarkPublishError:
+                        raise
+                    except:
+                        pass
+            except PoshmarkPublishError:
+                raise
+            except:
+                pass
+            
+            # If we still couldn't fill it, note it but don't fail yet (might be on next step)
+            print(f">>> Warning: Could not fill price field on first step (will try on next step if available)")
         
         # Wait a bit for form to process the inputs
         await asyncio.sleep(1)
@@ -686,7 +714,7 @@ async def publish_listing_to_poshmark(
         # Try clicking the button - if modal intercepts, use JavaScript click
         try:
             await publish_btn.click(timeout=5000)
-        print(">>> Clicked publish button")
+            print(">>> Clicked publish button")
         except Exception as click_error:
             if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
                 print(f">>> Modal intercepted click, using JavaScript click instead...")
@@ -801,12 +829,36 @@ async def publish_listing_to_poshmark(
                         }}
                     """)
                     if filled:
-                        print(f">>> ✓ Filled price via JavaScript")
+                        print(f">>> ✓ Filled price via JavaScript on next step")
                         price_filled = True
                 except Exception as e:
                     print(f">>> Could not fill price via JavaScript: {e}")
             
-            # Look for final publish button (regardless of whether price was filled)
+            # CRITICAL: If price is still not filled, we cannot proceed
+            if not price_filled:
+                # Check for required field validation
+                try:
+                    required_fields = await page.query_selector_all('[required], [aria-required="true"]')
+                    for field in required_fields:
+                        try:
+                            field_name = await field.get_attribute("name") or await field.get_attribute("placeholder") or await field.get_attribute("id")
+                            field_value = await field.input_value() if await field.is_visible() else None
+                            if "price" in (field_name or "").lower() and (not field_value or field_value.strip() == ""):
+                                print(f">>> ERROR: Required price field is still empty after Next step")
+                                raise PoshmarkPublishError(f"Failed to fill required price field on second step. Field: {field_name}")
+                        except PoshmarkPublishError:
+                            raise
+                        except:
+                            pass
+                except PoshmarkPublishError:
+                    raise
+                except:
+                    pass
+                
+                # If we still can't find/fill price, this is a critical error
+                raise PoshmarkPublishError("Failed to fill price field on both first and second steps. Price is required for listing creation.")
+            
+            # Look for final publish button (only after price is confirmed filled)
             print(f">>> Looking for final publish button...")
             
             # First, debug what buttons are available on the page
@@ -991,7 +1043,7 @@ async def publish_listing_to_poshmark(
             if "/listing/" in current_url and "/create-listing" not in current_url:
                 print(f">>> ✓ Redirected to listing page: {current_url}")
                 # Extract listing ID
-             parts = current_url.split("/")
+                parts = current_url.split("/")
                 listing_id = parts[-1].split("-")[-1] if parts else None
                 print(f">>> Extracted listing ID: {listing_id}")
                 break
@@ -1084,23 +1136,69 @@ async def publish_listing_to_poshmark(
                 import traceback
                 traceback.print_exc()
         
-        # If still no listing URL, it might be in drafts or failed
-        if "/listing/" not in current_url or "/create-listing" in current_url:
-            print(f">>> ⚠ Listing might be saved as draft or publish failed. Current URL: {current_url}")
+        # STRICT VALIDATION: If still on create-listing page, this is a FAILURE
+        if "/create-listing" in current_url:
+            print(f">>> ✗ ERROR: Still on create-listing page after publish attempt. This indicates failure.")
+            print(f">>> Current URL: {current_url}")
+            
             # Take a screenshot for debugging
+            screenshot_path = "/tmp/publish_failed_still_on_create_listing.png"
             try:
-                await page.screenshot(path="/tmp/publish_final_state.png")
-                print(f">>> Screenshot saved to /tmp/publish_final_state.png")
+                await page.screenshot(path=screenshot_path, full_page=True)
+                print(f">>> Screenshot saved to: {screenshot_path}")
             except:
                 pass
-            # Return success but with a note
-            return {
-                "status": "published",
-                "url": current_url,
-                "external_item_id": listing_id,
-                "note": "Listing may be in drafts. Please check your Poshmark account."
-            }
-
+            
+            # Check for validation errors
+            error_messages = []
+            try:
+                error_elements = await page.query_selector_all('.error, .error-message, [role="alert"], [class*="error"], [class*="validation"]')
+                for err in error_elements[:5]:
+                    try:
+                        text = await err.inner_text()
+                        if text and text.strip():
+                            error_messages.append(text.strip()[:200])
+                            print(f">>> Validation error: {text.strip()[:200]}")
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Check for required field errors
+            try:
+                required_fields = await page.query_selector_all('[required], [aria-required="true"]')
+                for field in required_fields[:5]:
+                    try:
+                        field_name = await field.get_attribute("name") or await field.get_attribute("placeholder") or await field.get_attribute("id")
+                        field_value = await field.input_value() if await field.is_visible() else None
+                        if not field_value or field_value.strip() == "":
+                            error_messages.append(f"Required field '{field_name}' is empty")
+                            print(f">>> Required field empty: {field_name}")
+                    except:
+                        pass
+            except:
+                pass
+            
+            error_detail = f"Publish failed: Still on create-listing page after submission."
+            if error_messages:
+                error_detail += f" Errors: {'; '.join(error_messages[:3])}"
+            
+            raise PoshmarkPublishError(error_detail)
+        
+        # If we don't have a listing URL but we're not on create-listing, something else went wrong
+        if "/listing/" not in current_url:
+            print(f">>> ⚠ Warning: Not on create-listing but also not on listing page. Current URL: {current_url}")
+            # Take a screenshot for debugging
+            try:
+                await page.screenshot(path="/tmp/publish_unknown_state.png")
+                print(f">>> Screenshot saved to /tmp/publish_unknown_state.png")
+            except:
+                pass
+            # This is still a failure - we should have a listing URL
+            raise PoshmarkPublishError(f"Publish failed: Expected redirect to listing page but got: {current_url}")
+        
+        # Success - we have a listing URL
+        print(f">>> ✓ Successfully published! Listing URL: {current_url}")
         return {
             "status": "published",
             "url": current_url,
@@ -1170,10 +1268,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-                    context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                    )
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
