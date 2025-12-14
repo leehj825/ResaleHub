@@ -169,47 +169,80 @@ class MarketplaceService {
 
   /// Poshmark 인벤토리 조회 (비동기 작업 시작)
   Future<String> startPoshmarkInventoryFetch() async {
+    print('[MARKETPLACE] ===== startPoshmarkInventoryFetch STARTED =====');
     try {
       final baseUrl = _auth.baseUrl;
+      print('[MARKETPLACE] Base URL: $baseUrl');
+      
       final token = await _auth.getToken();
       if (token == null) {
-        print('[MARKETPLACE] ERROR: Not logged in');
+        print('[MARKETPLACE] ERROR: Not logged in - token is null');
         throw Exception('Not logged in');
       }
+      print('[MARKETPLACE] Token retrieved, length: ${token.length}');
 
       final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory');
-      print('[MARKETPLACE] Starting inventory fetch to: $url');
-      print('[MARKETPLACE] Token present: ${token.isNotEmpty}');
+      print('[MARKETPLACE] Full URL: $url');
+      print('[MARKETPLACE] URL scheme: ${url.scheme}');
+      print('[MARKETPLACE] URL host: ${url.host}');
+      print('[MARKETPLACE] URL path: ${url.path}');
       
-      final res = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(
-        const Duration(seconds: 60), // Increased timeout for initial request
-        onTimeout: () {
-          print('[MARKETPLACE] ERROR: Request timeout after 60 seconds');
-          print('[MARKETPLACE] URL was: $url');
-          throw Exception('Request timeout - the server may be taking too long to respond');
-        },
-      );
+      print('[MARKETPLACE] About to make HTTP GET request...');
+      final stopwatch = Stopwatch()..start();
+      
+      try {
+        final res = await http.get(
+          url,
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        ).timeout(
+          const Duration(seconds: 60),
+          onTimeout: () {
+            stopwatch.stop();
+            print('[MARKETPLACE] ERROR: Request timeout after ${stopwatch.elapsedMilliseconds}ms');
+            print('[MARKETPLACE] URL was: $url');
+            print('[MARKETPLACE] Base URL was: $baseUrl');
+            throw Exception('Request timeout - the server may be taking too long to respond');
+          },
+        );
+        
+        stopwatch.stop();
+        print('[MARKETPLACE] Request completed in ${stopwatch.elapsedMilliseconds}ms');
+        print('[MARKETPLACE] Response status: ${res.statusCode}');
+        print('[MARKETPLACE] Response headers: ${res.headers}');
+        print('[MARKETPLACE] Response body length: ${res.body.length}');
+        print('[MARKETPLACE] Response body: ${res.body}');
 
-      print('[MARKETPLACE] Response status: ${res.statusCode}');
-      print('[MARKETPLACE] Response body: ${res.body}');
+        if (res.statusCode != 200) {
+          print('[MARKETPLACE] ERROR: Non-200 status: ${res.statusCode}, body: ${res.body}');
+          throw Exception('Failed to start inventory fetch: ${res.statusCode} - ${res.body}');
+        }
 
-      if (res.statusCode != 200) {
-        print('[MARKETPLACE] ERROR: Non-200 status: ${res.statusCode}, body: ${res.body}');
-        throw Exception('Failed to start inventory fetch: ${res.statusCode} - ${res.body}');
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final jobId = data['job_id'] as String;
+        print('[MARKETPLACE] ✓ Successfully started inventory fetch, job_id: $jobId');
+        return jobId;
+      } on http.ClientException catch (e) {
+        stopwatch.stop();
+        print('[MARKETPLACE] HTTP ClientException: $e');
+        print('[MARKETPLACE] This usually means network error or connection refused');
+        throw Exception('Network error: ${e.message}. Please check your internet connection and ensure the server is running.');
+      } on FormatException catch (e) {
+        stopwatch.stop();
+        print('[MARKETPLACE] FormatException: $e');
+        throw Exception('Invalid response format: $e');
+      } catch (e) {
+        stopwatch.stop();
+        print('[MARKETPLACE] Other exception during HTTP request: $e');
+        rethrow;
       }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final jobId = data['job_id'] as String;
-      print('[MARKETPLACE] Successfully started inventory fetch, job_id: $jobId');
-      return jobId;
-    } catch (e) {
-      print('[MARKETPLACE] EXCEPTION in startPoshmarkInventoryFetch: $e');
+    } catch (e, stackTrace) {
+      print('[MARKETPLACE] ===== EXCEPTION in startPoshmarkInventoryFetch =====');
+      print('[MARKETPLACE] Exception type: ${e.runtimeType}');
+      print('[MARKETPLACE] Exception: $e');
+      print('[MARKETPLACE] Stack trace: $stackTrace');
       rethrow;
     }
   }
