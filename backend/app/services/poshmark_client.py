@@ -496,11 +496,11 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-            # 봇 탐지 화면인지 확인
+                # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
                 raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-            
+                
             # 스크린샷 저장
             screenshot_path = "/tmp/debug_failed_form_load.png"
             await page.screenshot(path=screenshot_path)
@@ -2140,8 +2140,14 @@ async def get_poshmark_inventory(
                 # Navigate to domain first before adding cookies (required by Playwright)
                 page_temp = await context.new_page()
                 try:
+                    print(f">>> [POSHMARK] Navigating to https://poshmark.com (for cookie setup)...", flush=True)
+                    sys.stdout.flush()
                     await page_temp.goto("https://poshmark.com", wait_until="domcontentloaded", timeout=10000)
-                except:
+                    print(f">>> [POSHMARK] ✓ Successfully navigated to https://poshmark.com", flush=True)
+                    sys.stdout.flush()
+                except Exception as e:
+                    print(f">>> [POSHMARK] ⚠ Warning: Navigation to poshmark.com failed: {e}", flush=True)
+                    sys.stdout.flush()
                     pass  # Continue even if navigation fails
                 await page_temp.close()
                 
@@ -2184,7 +2190,12 @@ async def get_poshmark_inventory(
             try:
                 # 로그인 상태 확인 - 최적화: 직접 closet 페이지로 이동하여 확인
                 log("Navigating to feed page to check login status...")
+                print(f">>> [POSHMARK] Navigating to https://poshmark.com/feed...", flush=True)
+                sys.stdout.flush()
                 await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=15000)
+                print(f">>> [POSHMARK] ✓ Successfully navigated to https://poshmark.com/feed", flush=True)
+                print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
+                sys.stdout.flush()
                 log(f"Feed page loaded: {page.url}")
                 
                 # 빠른 로그인 확인 - wait_for_selector 사용 (최대 3초 대기)
@@ -2327,8 +2338,13 @@ async def get_poshmark_inventory(
                 
                 log(f"Navigating to closet page: {actual_username}")
                 closet_url = f"https://poshmark.com/closet/{actual_username}"
+                print(f">>> [POSHMARK] Navigating to closet page: {closet_url}", flush=True)
+                sys.stdout.flush()
                 try:
                     await page.goto(closet_url, wait_until="domcontentloaded", timeout=15000)
+                    print(f">>> [POSHMARK] ✓ Successfully navigated to closet page", flush=True)
+                    print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
+                    sys.stdout.flush()
                     log(f"Closet page loaded: {page.url}")
                     
                     # 빠른 체크: listing 링크가 있는지 확인 (최대 2초 대기)
