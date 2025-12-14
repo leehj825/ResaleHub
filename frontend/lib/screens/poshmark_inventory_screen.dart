@@ -29,7 +29,17 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   @override
   void initState() {
     super.initState();
-    _loadInventory();
+    print('[POSHMARK_INVENTORY] initState called');
+    debugPrint('[POSHMARK_INVENTORY] Widget initialized');
+    // Use a post-frame callback to ensure context is fully available
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      print('[POSHMARK_INVENTORY] Post-frame callback, calling _loadInventory');
+      if (mounted) {
+        _loadInventory();
+      } else {
+        print('[POSHMARK_INVENTORY] Widget not mounted in post-frame callback');
+      }
+    });
   }
 
   @override

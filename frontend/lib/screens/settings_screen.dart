@@ -43,11 +43,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// Poshmark 인벤토리 화면으로 이동
   void _openPoshmarkInventory() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const PoshmarkInventoryScreen(),
-      ),
-    );
+    print('[SETTINGS] _openPoshmarkInventory called');
+    debugPrint('[SETTINGS] Navigating to PoshmarkInventoryScreen');
+    try {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) {
+            print('[SETTINGS] Building PoshmarkInventoryScreen');
+            return const PoshmarkInventoryScreen();
+          },
+        ),
+      ).then((value) {
+        print('[SETTINGS] Navigation completed, returned: $value');
+      }).catchError((error) {
+        print('[SETTINGS] Navigation error: $error');
+        debugPrint('Navigation error: $error');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to open Poshmark Inventory: $error'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      });
+      print('[SETTINGS] Navigation push called');
+    } catch (e, stackTrace) {
+      print('[SETTINGS] EXCEPTION in _openPoshmarkInventory: $e');
+      print('[SETTINGS] Stack trace: $stackTrace');
+      debugPrint('Exception in _openPoshmarkInventory: $e');
+      debugPrint('Stack trace: $stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error opening Poshmark Inventory: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _loadStatus() async {
@@ -346,7 +380,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ActionChip(
                   avatar: const Icon(Icons.inventory_2_outlined),
                   label: const Text('Poshmark Inventory'),
-                  onPressed: _openPoshmarkInventory,
+                  onPressed: () {
+                    print('[SETTINGS] Poshmark Inventory ActionChip pressed');
+                    _openPoshmarkInventory();
+                  },
                 ),
               ],
             ),
