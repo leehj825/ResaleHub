@@ -289,12 +289,20 @@ async def publish_listing_to_poshmark(
     listing_images: List[ListingImage],
     base_url: str,
     settings,
+    job_id: Optional[str] = None,
+    progress_tracker = None,
 ) -> dict:
     """
     Poshmark에 리스팅 업로드
     """
+    def emit_progress(msg, level="info"):
+        """Emit progress message if tracker available"""
+        print(f">>> {msg}", flush=True)
+        if progress_tracker and job_id:
+            progress_tracker.add_message(job_id, msg, level)
+    
     try:
-        print(f">>> Navigating to Poshmark listing page...")
+        emit_progress("Navigating to Poshmark listing page...")
         # Try multiple possible URLs for listing creation
         listing_urls = [
             "https://poshmark.com/listing/new",
@@ -355,7 +363,7 @@ async def publish_listing_to_poshmark(
                             listing_url = href
                             page_loaded = True
                 else:
-                    listing_url = "https://poshmark.com/listing/new"
+        listing_url = "https://poshmark.com/listing/new"
                     page_loaded = True
             except Exception as e:
                 print(f">>> Final navigation attempt failed: {e}")
@@ -439,15 +447,15 @@ async def publish_listing_to_poshmark(
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
                     raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
                 
-            
-            # 스크린샷 저장
-            screenshot_path = "/tmp/debug_failed_form_load.png"
-            await page.screenshot(path=screenshot_path)
-            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                
+                # 스크린샷 저장
+                screenshot_path = "/tmp/debug_failed_form_load.png"
+                await page.screenshot(path=screenshot_path)
+                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
             print(f">>> Current URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
-            
-            # 페이지 소스 일부 로깅
+                
+                # 페이지 소스 일부 로깅
                 
             raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
                 
@@ -455,6 +463,7 @@ async def publish_listing_to_poshmark(
         
         # 2. 이미지 업로드 (리소스 차단을 피하기 위해 이 부분은 주의 필요)
         if listing_images:
+            emit_progress(f"Uploading {len(listing_images)} images...")
             print(f">>> Uploading {len(listing_images)} images...")
             image_input_selector = 'input[type="file"]'
             
@@ -498,6 +507,7 @@ async def publish_listing_to_poshmark(
                 print(f">>> Warning: Image upload failed: {e}")
         
         # 3. 필수 필드 입력
+        emit_progress("Filling listing details (title, description, price)...")
         print(f">>> Filling listing details...")
         
         # 제목 - try multiple selectors
@@ -602,6 +612,7 @@ async def publish_listing_to_poshmark(
             print(f">>> Warning: Could not close modals: {e}")
         
         # 4. 발행 버튼 클릭
+        emit_progress("Looking for publish button...")
         print(f">>> Looking for publish button...")
         
         publish_btn = None
@@ -675,7 +686,7 @@ async def publish_listing_to_poshmark(
         # Try clicking the button - if modal intercepts, use JavaScript click
         try:
             await publish_btn.click(timeout=5000)
-            print(">>> Clicked publish button")
+        print(">>> Clicked publish button")
         except Exception as click_error:
             if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
                 print(f">>> Modal intercepted click, using JavaScript click instead...")
@@ -690,7 +701,7 @@ async def publish_listing_to_poshmark(
             await page.wait_for_load_state("networkidle", timeout=10000)
         except:
             pass
-        
+
         # If we clicked "Next", we might be on a price/shipping step - fill price if needed
         current_url = page.url
         button_text = ""
@@ -700,6 +711,7 @@ async def publish_listing_to_poshmark(
             pass
         
         if "next" in button_text.lower():
+            emit_progress("Clicked 'Next', filling price on next step...")
             print(f">>> Clicked 'Next', checking for price field on next step...")
             await asyncio.sleep(3)  # Wait longer for next step to load
             
@@ -961,6 +973,7 @@ async def publish_listing_to_poshmark(
                     pass
         
         # Wait for navigation to listing page or success confirmation
+        emit_progress("Waiting for publish to complete...")
         print(f">>> Waiting for publish to complete...")
         current_url = page.url
         listing_id = None
@@ -978,7 +991,7 @@ async def publish_listing_to_poshmark(
             if "/listing/" in current_url and "/create-listing" not in current_url:
                 print(f">>> ✓ Redirected to listing page: {current_url}")
                 # Extract listing ID
-                parts = current_url.split("/")
+             parts = current_url.split("/")
                 listing_id = parts[-1].split("-")[-1] if parts else None
                 print(f">>> Extracted listing ID: {listing_id}")
                 break
@@ -1110,6 +1123,8 @@ async def publish_listing(
     listing_images: List[ListingImage],
     base_url: str,
     settings,
+    job_id: Optional[str] = None,
+    progress_tracker = None,
 ) -> dict:
     """
     Poshmark에 리스팅 업로드 (메인 함수)
@@ -1120,11 +1135,16 @@ async def publish_listing(
     import time
     start_time = time.time()
     
-    def log(msg):
-        """Log with timestamp and flush immediately"""
+    def log(msg, level="info"):
+        """Log with timestamp and flush immediately, and emit progress if tracker available"""
         elapsed = time.time() - start_time
-        print(f">>> [PUBLISH {elapsed:.1f}s] {msg}", flush=True)
+        log_msg = f"[PUBLISH {elapsed:.1f}s] {msg}"
+        print(f">>> {log_msg}", flush=True)
         sys.stdout.flush()
+        
+        # Emit progress message if tracker is available
+        if progress_tracker and job_id:
+            progress_tracker.add_message(job_id, msg, level)
     
     log("Starting Poshmark listing publish...")
     username, cookies = await get_poshmark_cookies(db, user)
@@ -1150,10 +1170,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            )
+                    context = await browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
@@ -1279,10 +1299,10 @@ async def publish_listing(
                 # 5. 리스팅 업로드 수행
                 log("Starting listing upload...")
                 result = await publish_listing_to_poshmark(
-                    page, listing, listing_images, base_url, settings
+                    page, listing, listing_images, base_url, settings, job_id, progress_tracker
                 )
                 
-                log(f"✓ Publish successful! Total time: {time.time() - start_time:.1f}s")
+                log(f"✓ Publish successful! Total time: {time.time() - start_time:.1f}s", "success")
                 return result
                 
             finally:

@@ -1,5 +1,6 @@
 // ignore_for_file: unused_field
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // Clipboard
 import 'package:url_launcher/url_launcher.dart';
@@ -211,23 +212,118 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     }
   }
 
+  String? _publishJobId;
+  List<Map<String, dynamic>> _publishProgressMessages = [];
+  Timer? _progressTimer;
+  bool _progressDialogOpen = false;
+
+  @override
+  void dispose() {
+    _progressTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _publishToPoshmark() async {
-    setState(() => _publishing = true);
+    setState(() {
+      _publishing = true;
+      _publishProgressMessages = [];
+      _publishJobId = null;
+    });
+
+    // Show progress dialog
+    _showProgressDialog();
+
     try {
-      await _listingService.publishToPoshmark(_listing.id);
+      // Start publish and get job ID
+      final jobId = await _listingService.publishToPoshmark(_listing.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Published to Poshmark (dummy).')),
-      );
-      await _reloadListing();
+
+      setState(() => _publishJobId = jobId);
+
+      // Start polling for progress
+      _progressTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+        if (!mounted || _publishJobId == null) {
+          timer.cancel();
+          return;
+        }
+
+        try {
+          final progress = await _listingService.getPublishProgress(_publishJobId!);
+          if (!mounted) return;
+
+          final status = progress['status'] as String;
+          final messages = progress['messages'] as List<dynamic>;
+
+          setState(() {
+            _publishProgressMessages = messages.map((m) => m as Map<String, dynamic>).toList();
+          });
+          
+          // Update dialog by closing and reopening with new messages
+          if (mounted && _progressDialogOpen && Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+            _progressDialogOpen = false;
+            _showProgressDialog();
+          }
+
+          if (status == 'completed' || status == 'failed') {
+            timer.cancel();
+            _progressDialogOpen = false;
+            setState(() => _publishing = false);
+
+            // Close dialog
+            if (mounted && Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            }
+
+            if (status == 'completed') {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Published to Poshmark successfully!')),
+              );
+              await _reloadListing();
+            } else {
+              final latest = progress['latest_message'] as Map<String, dynamic>?;
+              final errorMsg = latest?['message'] ?? 'Publish failed';
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to publish: $errorMsg')),
+              );
+            }
+          }
+        } catch (e) {
+          debugPrint('Progress polling error: $e');
+        }
+      });
     } catch (e) {
       if (!mounted) return;
+      _progressDialogOpen = false;
+      setState(() => _publishing = false);
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(); // Close dialog
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to publish to Poshmark: $e')),
+        SnackBar(content: Text('Failed to start publish: $e')),
       );
-    } finally {
-      if (mounted) setState(() => _publishing = false);
     }
+  }
+
+  void _showProgressDialog() {
+    if (_progressDialogOpen) return;
+    _progressDialogOpen = true;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _ProgressDialogWidget(
+        progressMessages: _publishProgressMessages,
+        onCancel: () {
+          _progressTimer?.cancel();
+          _progressDialogOpen = false;
+          setState(() => _publishing = false);
+          Navigator.of(context).pop();
+        },
+      ),
+    );
+    
+    // Note: Dialog will be updated when setState is called with new progress messages
   }
 
   Widget _buildDetailRow(String label, String value, {bool copyable = false}) {
@@ -565,6 +661,90 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ProgressDialogWidget extends StatelessWidget {
+  final List<Map<String, dynamic>> progressMessages;
+  final VoidCallback onCancel;
+
+  const _ProgressDialogWidget({
+    required this.progressMessages,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 12),
+          Text('Publishing to Poshmark...'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: progressMessages.isEmpty
+            ? const Text('Starting publish...')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: progressMessages.length,
+                itemBuilder: (context, index) {
+                  final msg = progressMessages[index];
+                  final message = msg['message'] as String? ?? '';
+                  final level = msg['level'] as String? ?? 'info';
+
+                  Color color;
+                  IconData icon;
+                  switch (level) {
+                    case 'success':
+                      color = Colors.green;
+                      icon = Icons.check_circle;
+                      break;
+                    case 'error':
+                      color = Colors.red;
+                      icon = Icons.error;
+                      break;
+                    case 'warning':
+                      color = Colors.orange;
+                      icon = Icons.warning;
+                      break;
+                    default:
+                      color = Colors.blue;
+                      icon = Icons.info;
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(icon, size: 16, color: color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            message,
+                            style: TextStyle(fontSize: 13, color: color),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: onCancel,
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }

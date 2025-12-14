@@ -321,7 +321,7 @@ class ListingService {
     }
   }
 
-  Future<void> publishToPoshmark(int listingId) async {
+  Future<String> publishToPoshmark(int listingId) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
     if (token == null) {
@@ -339,6 +339,31 @@ class ListingService {
     if (res.statusCode != 200) {
       throw Exception('Failed to publish to Poshmark: ${res.body}');
     }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data['job_id'] as String;
+  }
+
+  Future<Map<String, dynamic>> getPublishProgress(String jobId) async {
+    final baseUrl = _authService.baseUrl;
+    final token = await _authService.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/publish/progress/$jobId');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to get progress: ${res.body}');
+    }
+
+    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
   Future<List<String>> getListingMarketplaces(int listingId) async {

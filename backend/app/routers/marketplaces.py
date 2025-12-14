@@ -13,6 +13,8 @@ import secrets
 import httpx
 # [FIX] Body 임포트 추가
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body, BackgroundTasks
+from app.core.progress_tracker import progress_tracker
+import uuid
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -859,25 +861,92 @@ def get_listing_marketplaces(listing_id: int, db: Session = Depends(get_db), cur
     return [link.marketplace for link in links]
 
 @router.post("/poshmark/{listing_id}/publish")
-async def publish_to_poshmark(listing_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def publish_to_poshmark(
+    listing_id: int, 
+    request: Request, 
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
     listing = _get_owned_listing_or_404(listing_id, current_user, db)
     listing_images = db.query(ListingImage).filter(ListingImage.listing_id == listing_id).order_by(ListingImage.sort_order.asc()).all()
     if not listing_images: raise HTTPException(status_code=400, detail="At least one image is required")
+    
+    # Generate job ID for progress tracking
+    job_id = str(uuid.uuid4())
     base_url = str(request.base_url).rstrip('/')
-    try:
-        result = await poshmark_publish_listing(db=db, user=current_user, listing=listing, listing_images=listing_images, base_url=base_url, settings=settings)
-        lm = db.query(ListingMarketplace).filter(ListingMarketplace.listing_id == listing.id, ListingMarketplace.marketplace == "poshmark").first()
-        if not lm:
-            lm = ListingMarketplace(listing_id=listing.id, marketplace="poshmark")
-            db.add(lm)
-        lm.status = result.get("status", "published")
-        lm.external_item_id = result.get("external_item_id")
-        lm.external_url = result.get("url")
-        db.commit()
-        return {"message": "Published to Poshmark", "url": result.get("url"), "listing_id": result.get("external_item_id")}
-    except PoshmarkAuthError as e: raise HTTPException(status_code=401, detail=str(e))
-    except PoshmarkPublishError as e: raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e: raise HTTPException(status_code=500, detail=f"Publish failed: {str(e)}")
+    
+    # Add initial progress message
+    progress_tracker.add_message(job_id, "Starting Poshmark publish...", "info")
+    
+    # Run publish in background
+    async def _publish_background():
+        try:
+            progress_tracker.add_message(job_id, "Initializing browser...", "info")
+            result = await poshmark_publish_listing(
+                db=db, 
+                user=current_user, 
+                listing=listing, 
+                listing_images=listing_images, 
+                base_url=base_url, 
+                settings=settings,
+                job_id=job_id,
+                progress_tracker=progress_tracker
+            )
+            
+            # Create a new DB session for the background task
+            from app.core.database import SessionLocal
+            bg_db = SessionLocal()
+            try:
+                lm = bg_db.query(ListingMarketplace).filter(
+                    ListingMarketplace.listing_id == listing.id, 
+                    ListingMarketplace.marketplace == "poshmark"
+                ).first()
+                if not lm:
+                    lm = ListingMarketplace(listing_id=listing.id, marketplace="poshmark")
+                    bg_db.add(lm)
+                lm.status = result.get("status", "published")
+                lm.external_item_id = result.get("external_item_id")
+                lm.external_url = result.get("url")
+                bg_db.commit()
+                progress_tracker.add_message(job_id, "✓ Published successfully!", "success")
+            except Exception as e:
+                bg_db.rollback()
+                progress_tracker.add_message(job_id, f"Error saving to database: {str(e)}", "error")
+            finally:
+                bg_db.close()
+                
+        except PoshmarkAuthError as e:
+            progress_tracker.add_message(job_id, f"Authentication error: {str(e)}", "error")
+        except PoshmarkPublishError as e:
+            progress_tracker.add_message(job_id, f"Publish error: {str(e)}", "error")
+        except Exception as e:
+            progress_tracker.add_message(job_id, f"Unexpected error: {str(e)}", "error")
+    
+    background_tasks.add_task(_publish_background)
+    
+    return {"job_id": job_id, "message": "Publish started", "status": "processing"}
+
+@router.get("/poshmark/publish/progress/{job_id}")
+async def get_publish_progress(job_id: str, current_user: User = Depends(get_current_user)):
+    """Get progress messages for a publish job"""
+    messages = progress_tracker.get_progress(job_id)
+    latest = progress_tracker.get_latest_message(job_id)
+    
+    # Determine status from latest message
+    status = "processing"
+    if latest:
+        if latest["level"] == "success":
+            status = "completed"
+        elif latest["level"] == "error":
+            status = "failed"
+    
+    return {
+        "job_id": job_id,
+        "status": status,
+        "messages": messages,
+        "latest_message": latest,
+    }
 
 @router.get("/ebay/me")
 async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
