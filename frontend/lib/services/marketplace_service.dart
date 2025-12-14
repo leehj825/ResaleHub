@@ -188,10 +188,11 @@ class MarketplaceService {
           'Accept': 'application/json',
         },
       ).timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 60), // Increased timeout for initial request
         onTimeout: () {
-          print('[MARKETPLACE] ERROR: Request timeout');
-          throw Exception('Request timeout');
+          print('[MARKETPLACE] ERROR: Request timeout after 60 seconds');
+          print('[MARKETPLACE] URL was: $url');
+          throw Exception('Request timeout - the server may be taking too long to respond');
         },
       );
 

@@ -1016,20 +1016,30 @@ async def poshmark_inventory(
         import asyncio
         asyncio.create_task(_run_inventory_task())
     
-    return {"message": "Inventory fetch started", "job_id": job_id}
+    print(f">>> [INVENTORY] Returning response with job_id: {job_id}")
+    response_data = {"message": "Inventory fetch started", "job_id": job_id}
+    print(f">>> [INVENTORY] Response data: {response_data}")
+    return response_data
 
 @router.get("/poshmark/inventory-progress/{job_id}")
 async def get_poshmark_inventory_progress(job_id: str):
     """Get progress updates for inventory loading"""
+    print(f">>> [INVENTORY_PROGRESS] Request for job_id: {job_id}")
     progress = progress_tracker.get_progress(job_id)
     status_info = progress_tracker.get_status(job_id)
     
+    print(f">>> [INVENTORY_PROGRESS] Status info: {status_info}")
+    print(f">>> [INVENTORY_PROGRESS] Progress messages count: {len(progress)}")
+    
     if not status_info:
+        print(f">>> [INVENTORY_PROGRESS] Job not found: {job_id}")
         raise HTTPException(status_code=404, detail="Job not found")
     
-    return {
+    response = {
         "status": status_info["status"],
         "messages": progress,
         "latest_message": progress[-1] if progress else None,
         "result": status_info.get("result"),
     }
+    print(f">>> [INVENTORY_PROGRESS] Returning response for job_id: {job_id}, status: {status_info['status']}")
+    return response
