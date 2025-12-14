@@ -283,6 +283,75 @@ async def login_to_poshmark(page: Page, username: str, password: str) -> bool:
         raise PoshmarkAuthError(f"Login process failed: {str(e)}")
 
 
+async def handle_modals(page: Page) -> None:
+    """
+    Aggressively close any Poshmark modals that might be blocking interactions.
+    Looks for common modal close buttons and dismisses them.
+    """
+    try:
+        # First, try pressing Escape multiple times
+        for _ in range(3):
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(0.3)
+        
+        # Look for modal close buttons with various selectors
+        close_button_selectors = [
+            'button[data-test="modal-close-button"]',
+            'button[aria-label="Close"]',
+            'button[aria-label*="close" i]',
+            'button[aria-label*="Close" i]',
+            '.modal-close',
+            '[data-test*="close"]',
+            '[data-test*="modal-close"]',
+            'button:has-text("Got it")',
+            'button:has-text("No thanks")',
+            'button:has-text("Later")',
+            'button:has-text("Skip")',
+            'button:has-text("Dismiss")',
+        ]
+        
+        for selector in close_button_selectors:
+            try:
+                close_buttons = await page.query_selector_all(selector)
+                for close_btn in close_buttons:
+                    try:
+                        if await close_btn.is_visible():
+                            await close_btn.click(timeout=1000, force=True)
+                            print(f">>> Closed modal with selector: {selector}")
+                            await asyncio.sleep(0.3)
+                    except:
+                        pass
+            except:
+                pass
+        
+        # Try to remove modal backdrops via JavaScript
+        await page.evaluate("""
+            () => {
+                // Remove modal backdrops
+                const backdrops = document.querySelectorAll('.modal-backdrop, [data-test="modal"], .modal-backdrop--in');
+                backdrops.forEach(modal => {
+                    modal.style.display = 'none';
+                    modal.remove();
+                });
+                
+                // Close any visible modals
+                const modals = document.querySelectorAll('.modal.show, .modal.in, [class*="modal"][class*="show"]');
+                modals.forEach(modal => {
+                    modal.style.display = 'none';
+                    modal.classList.remove('show', 'in');
+                });
+            }
+        """)
+        await asyncio.sleep(0.5)
+        
+        # Check if modals still exist
+        remaining_modals = await page.query_selector_all('.modal-backdrop--in, [data-test="modal"].modal-backdrop--in')
+        if remaining_modals:
+            print(f">>> Warning: {len(remaining_modals)} modals still present after cleanup")
+    except Exception as e:
+        print(f">>> Warning: Error handling modals: {e}")
+
+
 async def publish_listing_to_poshmark(
     page: Page,
     listing: Listing,
@@ -405,11 +474,11 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-            # 봇 탐지 화면인지 확인
+                # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
                 raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-                
+            
             # 스크린샷 저장
             screenshot_path = "/tmp/debug_failed_form_load.png"
             await page.screenshot(path=screenshot_path)
@@ -598,12 +667,22 @@ async def publish_listing_to_poshmark(
                                 if data_vv_name and "original" in data_vv_name.lower():
                                     continue
                                 
+                                # Handle modals before clicking
+                                await handle_modals(page)
+                                
                                 # Scroll into view
                                 await price_field.scroll_into_view_if_needed()
                                 await asyncio.sleep(0.3)
                                 
-                                # Clear and fill
-                                await price_field.click()
+                                # Clear and fill - use force=True to bypass modal interception
+                                try:
+                                    await price_field.click(force=True)
+                                except Exception as click_err:
+                                    if "intercepts pointer events" in str(click_err):
+                                        print(f">>> Modal intercepted price click, handling modals and retrying...")
+                                        await handle_modals(page)
+                                        await price_field.click(force=True)
+                                
                                 await price_field.fill("")
                                 await asyncio.sleep(0.3)
                                 await price_field.fill(price)
@@ -648,12 +727,22 @@ async def publish_listing_to_poshmark(
                         is_visible = await price_field.is_visible()
                         is_enabled = await price_field.is_enabled()
                         if is_visible and is_enabled:
+                            # Handle modals before clicking
+                            await handle_modals(page)
+                            
                             # Scroll into view
                             await price_field.scroll_into_view_if_needed()
                             await asyncio.sleep(0.3)
                             
-                            # Clear and fill
-                            await price_field.click()
+                            # Clear and fill - use force=True to bypass modal interception
+                            try:
+                                await price_field.click(force=True)
+                            except Exception as click_err:
+                                if "intercepts pointer events" in str(click_err):
+                                    print(f">>> Modal intercepted price click, handling modals and retrying...")
+                                    await handle_modals(page)
+                                    await price_field.click(force=True)
+                            
                             await price_field.fill("")
                             await asyncio.sleep(0.3)
                             await price_field.fill(price)
@@ -814,40 +903,31 @@ async def publish_listing_to_poshmark(
             # Modal might not be there or already closed
             pass
         
-        # Try to close any remaining modals
-        try:
-            modals = await page.query_selector_all('.modal-backdrop--in, [data-test="modal"].modal-backdrop--in')
-            if modals:
-                print(f">>> Found {len(modals)} active modals, closing...")
-                # Press Escape to close modals
-                await page.keyboard.press('Escape')
-                await asyncio.sleep(1)
-                # Try clicking outside modal
-                await page.evaluate("""
-                    () => {
-                        const modals = document.querySelectorAll('.modal-backdrop--in');
-                        modals.forEach(modal => {
-                            const clickEvent = new MouseEvent('click', { bubbles: true });
-                            modal.dispatchEvent(clickEvent);
-                        });
-                    }
-                """)
-                await asyncio.sleep(1)
-        except Exception as e:
-            print(f">>> Warning: Could not close modals: {e}")
+        # Handle modals before clicking publish button
+        await handle_modals(page)
         
-        # Try clicking the button - if modal intercepts, use JavaScript click
-        try:
-            await publish_btn.click(timeout=5000)
-            print(">>> Clicked publish button")
-        except Exception as click_error:
-            if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
-                print(f">>> Modal intercepted click, using JavaScript click instead...")
-                # Use JavaScript to click the button directly
-                await publish_btn.evaluate("button => button.click()")
-                print(">>> Clicked publish button via JavaScript")
-            else:
-                raise
+        # Try clicking the button with force=True and retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                await publish_btn.click(timeout=5000, force=True)
+                print(">>> Clicked publish button")
+                break
+            except Exception as click_error:
+                if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
+                    if attempt < max_retries - 1:
+                        print(f">>> Modal intercepted click (attempt {attempt + 1}/{max_retries}), handling modals and retrying...")
+                        await handle_modals(page)
+                        await asyncio.sleep(0.5)
+                        continue
+                    else:
+                        print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
+                        await handle_modals(page)
+                        await publish_btn.evaluate("button => button.click()")
+                        print(">>> Clicked publish button via JavaScript")
+                        break
+                else:
+                    raise
         
         # Wait for navigation or next step
         try:
@@ -967,10 +1047,21 @@ async def publish_listing_to_poshmark(
                                 is_visible = await price_field.is_visible()
                                 is_enabled = await price_field.is_enabled()
                                 if is_visible and is_enabled:
+                                    # Handle modals before clicking
+                                    await handle_modals(page)
+                                    
                                     await price_field.scroll_into_view_if_needed()
                                     await asyncio.sleep(0.5)
                                     
-                                    await price_field.click()
+                                    # Use force=True to bypass modal interception
+                                    try:
+                                        await price_field.click(force=True)
+                                    except Exception as click_err:
+                                        if "intercepts pointer events" in str(click_err):
+                                            print(f">>> Modal intercepted price click on next step, handling modals and retrying...")
+                                            await handle_modals(page)
+                                            await price_field.click(force=True)
+                                    
                                     await price_field.fill("")
                                     await asyncio.sleep(0.3)
                                     await price_field.fill(price)
@@ -1011,10 +1102,21 @@ async def publish_listing_to_poshmark(
                             is_visible = await price_field.is_visible()
                             is_enabled = await price_field.is_enabled()
                             if is_visible and is_enabled:
+                                # Handle modals before clicking
+                                await handle_modals(page)
+                                
                                 await price_field.scroll_into_view_if_needed()
                                 await asyncio.sleep(0.5)
                                 
-                                await price_field.click()
+                                # Use force=True to bypass modal interception
+                                try:
+                                    await price_field.click(force=True)
+                                except Exception as click_err:
+                                    if "intercepts pointer events" in str(click_err):
+                                        print(f">>> Modal intercepted price click on next step, handling modals and retrying...")
+                                        await handle_modals(page)
+                                        await price_field.click(force=True)
+                                
                                 await price_field.fill("")
                                 await asyncio.sleep(0.3)
                                 await price_field.fill(price)
@@ -1144,23 +1246,31 @@ async def publish_listing_to_poshmark(
                     if final_publish_btn:
                         btn_text = await final_publish_btn.inner_text()
                         print(f">>> ✓ Found final publish button with selector '{selector}': {btn_text}")
-                        # Close modals again
-                        try:
-                            await page.keyboard.press('Escape')
-                            await asyncio.sleep(0.5)
-                        except:
-                            pass
+                        # Handle modals before clicking
+                        await handle_modals(page)
                         
-                        try:
-                            await final_publish_btn.click(timeout=5000)
-                            print(">>> Clicked final publish button")
-                        except Exception as e:
-                            if "intercepts" in str(e).lower() or "modal" in str(e).lower():
-                                print(f">>> Modal intercepted, using JavaScript click...")
-                                await final_publish_btn.evaluate("button => button.click()")
-                                print(">>> Clicked final publish button via JavaScript")
-                            else:
-                                raise
+                        # Try clicking with force=True and retry logic
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                await final_publish_btn.click(timeout=5000, force=True)
+                                print(">>> Clicked final publish button")
+                                break
+                            except Exception as e:
+                                if "intercepts pointer events" in str(e) or "modal" in str(e).lower():
+                                    if attempt < max_retries - 1:
+                                        print(f">>> Modal intercepted (attempt {attempt + 1}/{max_retries}), handling modals and retrying...")
+                                        await handle_modals(page)
+                                        await asyncio.sleep(0.5)
+                                        continue
+                                    else:
+                                        print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
+                                        await handle_modals(page)
+                                        await final_publish_btn.evaluate("button => button.click()")
+                                        print(">>> Clicked final publish button via JavaScript")
+                                        break
+                                else:
+                                    raise
                         break
                 except:
                     continue
@@ -1178,23 +1288,31 @@ async def publish_listing_to_poshmark(
                                 if is_visible:
                                     print(f">>> ✓ Found button by text: '{text}'")
                                     final_publish_btn = btn
-                                    # Close modals
-                                    try:
-                                        await page.keyboard.press('Escape')
-                                        await asyncio.sleep(0.5)
-                                    except:
-                                        pass
+                                    # Handle modals before clicking
+                                    await handle_modals(page)
                                     
-                                    try:
-                                        await final_publish_btn.click(timeout=5000)
-                                        print(">>> Clicked final publish button")
-                                    except Exception as e:
-                                        if "intercepts" in str(e).lower() or "modal" in str(e).lower():
-                                            print(f">>> Modal intercepted, using JavaScript click...")
-                                            await final_publish_btn.evaluate("button => button.click()")
-                                            print(">>> Clicked final publish button via JavaScript")
-                                        else:
-                                            raise
+                                    # Try clicking with force=True and retry logic
+                                    max_retries = 3
+                                    for attempt in range(max_retries):
+                                        try:
+                                            await final_publish_btn.click(timeout=5000, force=True)
+                                            print(">>> Clicked final publish button")
+                                            break
+                                        except Exception as e:
+                                            if "intercepts pointer events" in str(e) or "modal" in str(e).lower():
+                                                if attempt < max_retries - 1:
+                                                    print(f">>> Modal intercepted (attempt {attempt + 1}/{max_retries}), handling modals and retrying...")
+                                                    await handle_modals(page)
+                                                    await asyncio.sleep(0.5)
+                                                    continue
+                                                else:
+                                                    print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
+                                                    await handle_modals(page)
+                                                    await final_publish_btn.evaluate("button => button.click()")
+                                                    print(">>> Clicked final publish button via JavaScript")
+                                                    break
+                                            else:
+                                                raise
                                     break
                         except:
                             continue
@@ -1245,15 +1363,31 @@ async def publish_listing_to_poshmark(
                                 if is_visible:
                                     print(f">>> ✓ Found button after scrolling: '{text}'")
                                     final_publish_btn = btn
-                                    try:
-                                        await final_publish_btn.click(timeout=5000)
-                                        print(">>> Clicked final publish button")
-                                    except Exception as e:
-                                        if "intercepts" in str(e).lower():
-                                            await final_publish_btn.evaluate("button => button.click()")
-                                            print(">>> Clicked final publish button via JavaScript")
-                                        else:
-                                            raise
+                                    # Handle modals before clicking
+                                    await handle_modals(page)
+                                    
+                                    # Try clicking with force=True and retry logic
+                                    max_retries = 3
+                                    for attempt in range(max_retries):
+                                        try:
+                                            await final_publish_btn.click(timeout=5000, force=True)
+                                            print(">>> Clicked final publish button")
+                                            break
+                                        except Exception as e:
+                                            if "intercepts pointer events" in str(e) or "modal" in str(e).lower():
+                                                if attempt < max_retries - 1:
+                                                    print(f">>> Modal intercepted (attempt {attempt + 1}/{max_retries}), handling modals and retrying...")
+                                                    await handle_modals(page)
+                                                    await asyncio.sleep(0.5)
+                                                    continue
+                                                else:
+                                                    print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
+                                                    await handle_modals(page)
+                                                    await final_publish_btn.evaluate("button => button.click()")
+                                                    print(">>> Clicked final publish button via JavaScript")
+                                                    break
+                                            else:
+                                                raise
                                     break
                         except:
                             continue
@@ -1512,9 +1646,9 @@ async def publish_listing(
             # 2. Create context and load cookies
             log("Creating browser context...")
             context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            )
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
