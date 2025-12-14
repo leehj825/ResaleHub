@@ -215,26 +215,47 @@ class MarketplaceService {
 
   /// Poshmark 인벤토리 진행 상황 조회
   Future<Map<String, dynamic>> getPoshmarkInventoryProgress(String jobId) async {
-    final baseUrl = _auth.baseUrl;
-    final token = await _auth.getToken();
-    if (token == null) {
-      throw Exception('Not logged in');
+    try {
+      print('[MARKETPLACE] getPoshmarkInventoryProgress called with jobId: $jobId');
+      final baseUrl = _auth.baseUrl;
+      final token = await _auth.getToken();
+      if (token == null) {
+        print('[MARKETPLACE] ERROR: Not logged in');
+        throw Exception('Not logged in');
+      }
+
+      final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory-progress/$jobId');
+      print('[MARKETPLACE] Fetching progress from: $url');
+      
+      final res = await http.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      ).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          print('[MARKETPLACE] ERROR: Progress request timeout');
+          throw Exception('Request timeout');
+        },
+      );
+
+      print('[MARKETPLACE] Progress response status: ${res.statusCode}');
+      print('[MARKETPLACE] Progress response body: ${res.body}');
+
+      if (res.statusCode != 200) {
+        print('[MARKETPLACE] ERROR: Non-200 status: ${res.statusCode}, body: ${res.body}');
+        throw Exception('Failed to get inventory progress: ${res.statusCode} - ${res.body}');
+      }
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      print('[MARKETPLACE] Progress data parsed successfully');
+      return data;
+    } catch (e) {
+      print('[MARKETPLACE] EXCEPTION in getPoshmarkInventoryProgress: $e');
+      rethrow;
     }
-
-    final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory-progress/$jobId');
-    final res = await http.get(
-      url,
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      },
-    );
-
-    if (res.statusCode != 200) {
-      throw Exception('Failed to get inventory progress: ${res.body}');
-    }
-
-    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
   /// Poshmark 인벤토리 조회 (레거시 - 호환성 유지)

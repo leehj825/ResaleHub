@@ -58,38 +58,54 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   }
 
   Future<void> _loadInventory() async {
-    print('[POSHMARK_INVENTORY] _loadInventory called');
-    setState(() {
-      _isLoading = true;
-      _error = null;
-      _progressMessages = [];
-      _inventoryJobId = null;
-    });
-
-    _showProgressDialog(); // Show dialog immediately
-
+    print('[POSHMARK_INVENTORY] ===== _loadInventory STARTED =====');
     try {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+        _progressMessages = [];
+        _inventoryJobId = null;
+      });
+
+      print('[POSHMARK_INVENTORY] State updated, showing progress dialog...');
+      _showProgressDialog(); // Show dialog immediately
+
       print('[POSHMARK_INVENTORY] Calling startPoshmarkInventoryFetch...');
+      print('[POSHMARK_INVENTORY] MarketplaceService instance: $_marketplaceService');
+      
       final jobId = await _marketplaceService.startPoshmarkInventoryFetch();
-      print('[POSHMARK_INVENTORY] Received jobId: $jobId');
-      if (!mounted) return;
+      print('[POSHMARK_INVENTORY] ✓ Received jobId: $jobId');
+      
+      if (!mounted) {
+        print('[POSHMARK_INVENTORY] Widget not mounted, returning');
+        return;
+      }
 
       setState(() {
         _inventoryJobId = jobId;
       });
+      print('[POSHMARK_INVENTORY] JobId set in state, starting progress timer...');
 
       _progressTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+        print('[POSHMARK_INVENTORY] Progress timer tick, jobId: $_inventoryJobId');
         if (!mounted || _inventoryJobId == null) {
           timer.cancel();
           return;
         }
 
         try {
+          print('[POSHMARK_INVENTORY] Fetching progress for jobId: $_inventoryJobId');
           final progress = await _marketplaceService.getPoshmarkInventoryProgress(_inventoryJobId!);
-          if (!mounted) return;
+          print('[POSHMARK_INVENTORY] Progress received: status=${progress['status']}, messages=${progress['messages']?.length ?? 0}');
+          
+          if (!mounted) {
+            print('[POSHMARK_INVENTORY] Widget not mounted during progress check');
+            return;
+          }
 
           final status = progress['status'] as String;
           final messages = progress['messages'] as List<dynamic>;
+          print('[POSHMARK_INVENTORY] Status: $status, Messages count: ${messages.length}');
 
           setState(() {
             _progressMessages = messages.map((m) => m as Map<String, dynamic>).toList();
@@ -144,30 +160,44 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
           debugPrint('Progress polling error: $e');
         }
       });
-    } catch (e) {
-      print('[POSHMARK_INVENTORY] EXCEPTION in _loadInventory: $e');
+    } catch (e, stackTrace) {
+      print('[POSHMARK_INVENTORY] ===== EXCEPTION CAUGHT =====');
+      print('[POSHMARK_INVENTORY] Exception: $e');
       print('[POSHMARK_INVENTORY] Exception type: ${e.runtimeType}');
-      if (e is Exception) {
-        print('[POSHMARK_INVENTORY] Exception message: ${e.toString()}');
-      }
+      print('[POSHMARK_INVENTORY] Stack trace: $stackTrace');
       debugPrint('Error loading inventory: $e');
+      debugPrint('Stack trace: $stackTrace');
       
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop(); // Close dialog
+      if (!mounted) {
+        print('[POSHMARK_INVENTORY] Widget not mounted, cannot update UI');
+        return;
       }
+      
+      // Close dialog if open
+      if (_progressDialogOpen && Navigator.of(context).canPop()) {
+        print('[POSHMARK_INVENTORY] Closing progress dialog');
+        Navigator.of(context).pop();
+        _progressDialogOpen = false;
+      }
+      
+      // Cancel timer if running
+      _progressTimer?.cancel();
+      _progressTimer = null;
       
       // Check if error has screenshot
       String? screenshotBase64;
       if (e is PoshmarkInventoryError) {
         screenshotBase64 = e.screenshotBase64;
+        print('[POSHMARK_INVENTORY] PoshmarkInventoryError with screenshot: ${screenshotBase64 != null}');
       }
       
       setState(() {
+        _isLoading = false;
         _error = e.toString();
         _errorScreenshotBase64 = screenshotBase64;
       });
+      
+      print('[POSHMARK_INVENTORY] Error state set, showing SnackBar...');
       
       // Show error to user
       if (mounted) {
@@ -175,10 +205,15 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
           SnackBar(
             content: Text('Failed to start inventory fetch: $e'),
             backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5),
+            duration: const Duration(seconds: 10),
+            action: SnackBarAction(
+              label: 'Retry',
+              onPressed: _loadInventory,
+            ),
           ),
         );
       }
+      print('[POSHMARK_INVENTORY] ===== EXCEPTION HANDLING COMPLETE =====');
     }
   }
 
@@ -252,8 +287,26 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   }
 
   Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
+    // Don't show CircularProgressIndicator if we have a progress dialog open
+    // The dialog handles the loading state
+    if (_isLoading && !_progressDialogOpen) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Loading inventory...'),
+          ],
+        ),
+      );
+    }
+    
+    if (_isLoading && _progressDialogOpen) {
+      // Dialog is showing, just show empty space or a message
+      return const Center(
+        child: Text('Loading inventory...'),
+      );
     }
 
     if (_error != null) {
