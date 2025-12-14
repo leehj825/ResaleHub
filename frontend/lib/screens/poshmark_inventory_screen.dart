@@ -445,15 +445,21 @@ class _ProgressDialogWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Row(
+      title: Row(
         children: [
-          SizedBox(
+          const SizedBox(
             width: 20,
             height: 20,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
-          SizedBox(width: 12),
-          Text('Loading Poshmark Inventory...'),
+          const SizedBox(width: 12),
+          Flexible(
+            child: const Text(
+              'Loading Poshmark Inventory...',
+              softWrap: true,
+              overflow: TextOverflow.visible,
+            ),
+          ),
         ],
       ),
       content: SizedBox(
