@@ -39,7 +39,7 @@ class ListingService {
         .toList();
   }
 
-  // [수정됨] thumbnailUrl 파라미터 추가
+  // [수정됨] thumbnailUrl 파라미터 추가, Poshmark fields 추가
   Future<Listing> createListing({
     required String title,
     String? description,
@@ -51,6 +51,14 @@ class ListingService {
     String? importExternalId,
     String? importUrl,
     String? thumbnailUrl, // 추가
+    // Poshmark-specific fields
+    String? brand,
+    String? size,
+    double? originalPrice,
+    String? category,
+    String? subCategory,
+    String? colors,
+    String? material,
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -71,6 +79,14 @@ class ListingService {
       'import_external_id': importExternalId,
       'import_url': importUrl,
       'thumbnail_url': thumbnailUrl, // 백엔드로 전송
+      // Poshmark-specific fields
+      'brand': brand,
+      'size': size,
+      'original_price': originalPrice,
+      'category': category,
+      'sub_category': subCategory,
+      'colors': colors,
+      'material': material,
     };
 
     final res = await http.post(
@@ -101,6 +117,14 @@ class ListingService {
     String? status,
     String? sku,
     String? condition,
+    // Poshmark-specific fields
+    String? brand,
+    String? size,
+    double? originalPrice,
+    String? category,
+    String? subCategory,
+    String? colors,
+    String? material,
   }) async {
     final baseUrl = _authService.baseUrl;
     final token = await _authService.getToken();
@@ -118,6 +142,14 @@ class ListingService {
     if (status != null) body['status'] = status;
     if (sku != null) body['sku'] = sku;
     if (condition != null) body['condition'] = condition;
+    // Poshmark-specific fields
+    if (brand != null) body['brand'] = brand;
+    if (size != null) body['size'] = size;
+    if (originalPrice != null) body['original_price'] = originalPrice;
+    if (category != null) body['category'] = category;
+    if (subCategory != null) body['sub_category'] = subCategory;
+    if (colors != null) body['colors'] = colors;
+    if (material != null) body['material'] = material;
 
     final res = await http.put(
       url,

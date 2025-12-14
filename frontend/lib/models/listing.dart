@@ -46,6 +46,15 @@ class Listing {
   final String? sku;
   final String? condition;
 
+  // Poshmark-specific fields
+  final String? brand;
+  final String? size;
+  final double? originalPrice;
+  final String? category;
+  final String? subCategory;
+  final String? colors;
+  final String? material;
+
   // [상세 화면용]
   final List<String> imageUrls;
   
@@ -62,6 +71,13 @@ class Listing {
     this.thumbnailUrl,
     this.sku,        // [추가]
     this.condition,  // [추가]
+    this.brand,
+    this.size,
+    this.originalPrice,
+    this.category,
+    this.subCategory,
+    this.colors,
+    this.material,
     this.imageUrls = const [],
     this.marketplaces = const [],
   });
@@ -86,6 +102,17 @@ class Listing {
       // [추가됨] 백엔드 JSON 매핑
       sku: json['sku'] as String?,
       condition: json['condition'] as String?,
+      
+      // Poshmark-specific fields
+      brand: json['brand'] as String?,
+      size: json['size'] as String?,
+      originalPrice: json['original_price'] != null 
+          ? double.tryParse(json['original_price'].toString()) 
+          : null,
+      category: json['category'] as String?,
+      subCategory: json['sub_category'] as String?,
+      colors: json['colors'] as String?,
+      material: json['material'] as String?,
       
       imageUrls: json['image_urls'] != null 
           ? List<String>.from(json['image_urls']) 

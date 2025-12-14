@@ -24,6 +24,14 @@ class ListingBase(BaseModel):
     condition: Optional[str] = Field(default="USED_GOOD")
     ebay_category_id: Optional[str] = None
     brand: Optional[str] = None
+    
+    # Poshmark-specific fields
+    size: Optional[str] = Field(default=None, max_length=50)
+    original_price: Optional[Decimal] = Field(default=None, ge=0)
+    category: Optional[str] = Field(default=None, max_length=100)
+    sub_category: Optional[str] = Field(default=None, max_length=100)
+    colors: Optional[str] = Field(default=None, max_length=255)
+    material: Optional[str] = Field(default=None, max_length=255)
 
 class ListingCreate(ListingBase):
     # [추가] 이미지 저장을 위해 필드 추가
@@ -44,6 +52,14 @@ class ListingUpdate(BaseModel):
     condition: Optional[str] = None
     ebay_category_id: Optional[str] = None
     brand: Optional[str] = None
+    
+    # Poshmark-specific fields
+    size: Optional[str] = Field(default=None, max_length=50)
+    original_price: Optional[Decimal] = Field(default=None, ge=0)
+    category: Optional[str] = Field(default=None, max_length=100)
+    sub_category: Optional[str] = Field(default=None, max_length=100)
+    colors: Optional[str] = Field(default=None, max_length=255)
+    material: Optional[str] = Field(default=None, max_length=255)
 
 class ListingRead(ListingBase):
     id: int

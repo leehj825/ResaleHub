@@ -38,6 +38,14 @@ class Listing(Base):
     # eBay-specific fields
     ebay_category_id = Column(String(50), nullable=True)
     brand = Column(String(255), nullable=True)
+    
+    # Poshmark-specific fields
+    size = Column(String(50), nullable=True)  # E.g., "M", "10", "32x30"
+    original_price = Column(Numeric(10, 2), nullable=True)  # Required for "New with Tags" logic
+    category = Column(String(100), nullable=True)  # High-level category, e.g., "Men", "Women"
+    sub_category = Column(String(100), nullable=True)  # Granular category, e.g., "Shoes", "Tops"
+    colors = Column(String(255), nullable=True)  # Comma-separated or JSON list, e.g., "Black, Red"
+    material = Column(String(255), nullable=True)  # Optional, e.g., "Cotton"
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
