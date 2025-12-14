@@ -1052,9 +1052,34 @@ async def poshmark_inventory(
             detail=f"Error checking Poshmark credentials: {str(e)}"
         )
     
+    # Debug: Credential check passed
+    print(f">>> [DEBUG] Credential check passed. Moving to Step 2...", flush=True)
+    sys.stdout.flush()
+    
     # STEP 2: Create job_id and start background task
-    job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
-    progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
+    try:
+        print(f">>> [DEBUG] Starting Step 2: Creating job_id...", flush=True)
+        sys.stdout.flush()
+        
+        job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
+        print(f">>> [DEBUG] Generated Job ID: {job_id}", flush=True)
+        sys.stdout.flush()
+        
+        print(f">>> [DEBUG] Attempting to set progress_tracker status...", flush=True)
+        sys.stdout.flush()
+        
+        # Suspected blocking line
+        progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
+        
+        print(f">>> [DEBUG] progress_tracker status set successfully.", flush=True)
+        sys.stdout.flush()
+        
+    except Exception as e:
+        print(f">>> [CRITICAL ERROR] Failed during Step 2 initialization: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     
     print(f">>> [INVENTORY] Starting inventory fetch for user {current_user.id}, job_id: {job_id}", flush=True)
     sys.stdout.flush()
@@ -1098,16 +1123,37 @@ async def poshmark_inventory(
             sys.stdout.flush()
             progress_tracker.set_status(job_id, "failed", f"Failed to fetch inventory: {str(e)}", level="error")
     
+    print(f">>> [DEBUG] About to add background task...", flush=True)
+    sys.stdout.flush()
+    
     try:
+        print(f">>> [DEBUG] Calling background_tasks.add_task...", flush=True)
+        sys.stdout.flush()
+        
         background_tasks.add_task(_run_inventory_task)
-        print(f">>> [INVENTORY] Background task added for job_id: {job_id}")
+        
+        print(f">>> [DEBUG] background_tasks.add_task completed successfully", flush=True)
+        sys.stdout.flush()
+        print(f">>> [INVENTORY] Background task added for job_id: {job_id}", flush=True)
+        sys.stdout.flush()
     except Exception as e:
-        print(f">>> [INVENTORY] ERROR adding background task: {e}")
+        print(f">>> [CRITICAL ERROR] Failed to add background task: {e}", flush=True)
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
         # Fallback: try to run synchronously (not ideal but better than failing silently)
-        import asyncio
-        asyncio.create_task(_run_inventory_task())
+        try:
+            print(f">>> [DEBUG] Attempting fallback: asyncio.create_task...", flush=True)
+            sys.stdout.flush()
+            import asyncio
+            asyncio.create_task(_run_inventory_task())
+            print(f">>> [DEBUG] Fallback task created", flush=True)
+            sys.stdout.flush()
+        except Exception as fallback_error:
+            print(f">>> [CRITICAL ERROR] Fallback also failed: {fallback_error}", flush=True)
+            traceback.print_exc()
+            sys.stdout.flush()
+            raise HTTPException(status_code=500, detail=f"Failed to schedule background task: {str(e)}")
     
     print(f">>> [INVENTORY] Returning response with job_id: {job_id}", flush=True)
     response_data = {"message": "Inventory fetch started", "job_id": job_id}

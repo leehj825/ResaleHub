@@ -46,15 +46,32 @@ class ProgressTracker:
     
     def set_status(self, job_id: str, status: str, latest_message: str, level: str = "info", result: Optional[Dict] = None):
         """Set the status of a job (pending, completed, failed)"""
-        with self._lock:
-            self._status[job_id] = {
-                "status": status,
-                "latest_message": latest_message,
-                "level": level,
-                "result": result,
-            }
-            # Also add as a message
-            self.add_message(job_id, latest_message, level)
+        import sys
+        try:
+            print(f">>> [PROGRESS_TRACKER] set_status called: job_id={job_id}, status={status}", flush=True)
+            sys.stdout.flush()
+            
+            with self._lock:
+                print(f">>> [PROGRESS_TRACKER] Acquired lock for job_id={job_id}", flush=True)
+                sys.stdout.flush()
+                
+                self._status[job_id] = {
+                    "status": status,
+                    "latest_message": latest_message,
+                    "level": level,
+                    "result": result,
+                }
+                # Also add as a message
+                self.add_message(job_id, latest_message, level)
+                
+                print(f">>> [PROGRESS_TRACKER] set_status completed for job_id={job_id}", flush=True)
+                sys.stdout.flush()
+        except Exception as e:
+            print(f">>> [PROGRESS_TRACKER] ERROR in set_status: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+            raise
     
     def get_status(self, job_id: str) -> Optional[Dict[str, any]]:
         """Get the status of a job"""
