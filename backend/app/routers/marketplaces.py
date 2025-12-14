@@ -958,7 +958,7 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
 async def poshmark_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Start Poshmark inventory fetch in background and return job_id.
@@ -971,28 +971,44 @@ async def poshmark_inventory(
     job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
     progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
     
-    # Store result in a way we can retrieve it
-    result_store = {}
+    print(f">>> [INVENTORY] Starting inventory fetch for user {current_user.id}, job_id: {job_id}")
     
     async def _run_inventory_task():
         try:
+            print(f">>> [INVENTORY] Background task started for job_id: {job_id}")
             items = await get_poshmark_inventory(
                 db=db,
                 user=current_user,
                 job_id=job_id,
                 progress_tracker=progress_tracker
             )
-            result_store[job_id] = {"items": items, "total": len(items)}
-            progress_tracker.set_status(job_id, "completed", f"✓ Inventory loaded: {len(items)} items", result=result_store[job_id])
+            result_data = {"items": items, "total": len(items)}
+            progress_tracker.set_status(job_id, "completed", f"✓ Inventory loaded: {len(items)} items", result=result_data)
+            print(f">>> [INVENTORY] Background task completed for job_id: {job_id}, items: {len(items)}")
         except PoshmarkAuthError as e:
             error_detail = {"detail": str(e)}
             if e.screenshot_base64:
                 error_detail["screenshot"] = e.screenshot_base64
             progress_tracker.set_status(job_id, "failed", str(e), level="error", result=error_detail)
+            print(f">>> [INVENTORY] Background task failed (AuthError) for job_id: {job_id}: {str(e)}")
         except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f">>> [INVENTORY] ERROR in background task for job_id: {job_id}")
+            print(f">>> [INVENTORY] Error trace: {error_trace}")
             progress_tracker.set_status(job_id, "failed", f"Failed to fetch inventory: {str(e)}", level="error")
     
-    background_tasks.add_task(_run_inventory_task)
+    try:
+        background_tasks.add_task(_run_inventory_task)
+        print(f">>> [INVENTORY] Background task added for job_id: {job_id}")
+    except Exception as e:
+        print(f">>> [INVENTORY] ERROR adding background task: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: try to run synchronously (not ideal but better than failing silently)
+        import asyncio
+        asyncio.create_task(_run_inventory_task())
+    
     return {"message": "Inventory fetch started", "job_id": job_id}
 
 @router.get("/poshmark/inventory-progress/{job_id}")
