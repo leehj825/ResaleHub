@@ -692,51 +692,56 @@ class _ProgressDialogWidget extends StatelessWidget {
         width: double.maxFinite,
         child: progressMessages.isEmpty
             ? const Text('Starting publish...')
-            : ListView.builder(
-                shrinkWrap: true,
-                itemCount: progressMessages.length,
-                itemBuilder: (context, index) {
-                  final msg = progressMessages[index];
-                  final message = msg['message'] as String? ?? '';
-                  final level = msg['level'] as String? ?? 'info';
+            : ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 400),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: progressMessages.length,
+                  itemBuilder: (context, index) {
+                    final msg = progressMessages[index];
+                    final message = msg['message'] as String? ?? '';
+                    final level = msg['level'] as String? ?? 'info';
 
-                  Color color;
-                  IconData icon;
-                  switch (level) {
-                    case 'success':
-                      color = Colors.green;
-                      icon = Icons.check_circle;
-                      break;
-                    case 'error':
-                      color = Colors.red;
-                      icon = Icons.error;
-                      break;
-                    case 'warning':
-                      color = Colors.orange;
-                      icon = Icons.warning;
-                      break;
-                    default:
-                      color = Colors.blue;
-                      icon = Icons.info;
-                  }
+                    Color color;
+                    IconData icon;
+                    switch (level) {
+                      case 'success':
+                        color = Colors.green;
+                        icon = Icons.check_circle;
+                        break;
+                      case 'error':
+                        color = Colors.red;
+                        icon = Icons.error;
+                        break;
+                      case 'warning':
+                        color = Colors.orange;
+                        icon = Icons.warning;
+                        break;
+                      default:
+                        color = Colors.blue;
+                        icon = Icons.info;
+                    }
 
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(icon, size: 16, color: color),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            message,
-                            style: TextStyle(fontSize: 13, color: color),
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(icon, size: 16, color: color),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              message,
+                              style: TextStyle(fontSize: 13, color: color),
+                              softWrap: true,
+                              overflow: TextOverflow.visible,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
       ),
       actions: [

@@ -1799,19 +1799,19 @@ async def publish_listing(
     
     log("Starting Poshmark listing publish...", emit_to_frontend=True)
     username, cookies = await get_poshmark_cookies(db, user)
-    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)")
+    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)", emit_to_frontend=False)
     
     try:
-        log("Initializing Playwright browser...")
+        log("Initializing Playwright browser...", emit_to_frontend=False)
         async with async_playwright() as p:
             # 1. 브라우저 실행
             try:
-                log("Launching Chromium browser...")
+                log("Launching Chromium browser...", emit_to_frontend=False)
                 browser = await p.chromium.launch(
                     headless=True,
                     args=get_browser_launch_args()
                 )
-                log("Browser launched")
+                log("Browser launched", emit_to_frontend=False)
             except Exception as e:
                 if "Executable doesn't exist" in str(e):
                     raise PoshmarkPublishError(
@@ -1820,13 +1820,13 @@ async def publish_listing(
                 raise
             
             # 2. Create context and load cookies
-            log("Creating browser context...")
+            log("Creating browser context...", emit_to_frontend=False)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
             # Navigate to domain first before adding cookies
-            log("Navigating to poshmark.com to set cookie domain...")
+            log("Navigating to poshmark.com to set cookie domain...", emit_to_frontend=False)
             page_temp = await context.new_page()
             try:
                 await page_temp.goto("https://poshmark.com", wait_until="domcontentloaded", timeout=10000)
@@ -1835,7 +1835,7 @@ async def publish_listing(
             await page_temp.close()
             
             # Load cookies
-            log("Loading cookies into browser context...")
+            log("Loading cookies into browser context...", emit_to_frontend=False)
             import time as time_module
             current_timestamp = time_module.time()
             
@@ -1896,7 +1896,7 @@ async def publish_listing(
                     del cookie["sameSite"]
             
             await context.add_cookies(playwright_cookies)
-            log(f"Loaded {len(playwright_cookies)} cookies into browser context")
+            log(f"Loaded {len(playwright_cookies)} cookies into browser context", emit_to_frontend=False)
             
             page = await context.new_page()
             
@@ -1916,11 +1916,11 @@ async def publish_listing(
                     await route.continue_()
             
             await page.route("**/*", selective_block_publish)
-            log("Resource blocking configured")
+            log("Resource blocking configured", emit_to_frontend=False)
             
             try:
                 # 4. 로그인 상태 확인
-                log("Checking login status...")
+                log("Checking login status...", emit_to_frontend=False)
                 await page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=20000)
                 await asyncio.sleep(1)  # Wait for dynamic content
                 
@@ -1934,7 +1934,7 @@ async def publish_listing(
                         log("✓ Cookie authentication successful", level="success")
                 
                 if not is_logged_in:
-                    log("✗ Cookie authentication failed")
+                    log("✗ Cookie authentication failed", level="error")
                     screenshot_base64 = None
                     try:
                         screenshot_bytes = await page.screenshot(full_page=True)
@@ -1956,21 +1956,21 @@ async def publish_listing(
                 return result
                 
             finally:
-                log("Closing browser...")
+                log("Closing browser...", emit_to_frontend=False)
                 try:
                     await browser.close()
                 except:
                     pass
     except PoshmarkAuthError:
-        log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
+        log(f"✗ Authentication error after {time.time() - start_time:.1f}s", level="error")
         raise
     except PoshmarkPublishError:
-        log(f"✗ Publish error after {time.time() - start_time:.1f}s")
+        log(f"✗ Publish error after {time.time() - start_time:.1f}s", level="error")
         raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        log(f"✗ System error after {time.time() - start_time:.1f}s: {error_details}")
+        log(f"✗ System error after {time.time() - start_time:.1f}s: {error_details}", level="error")
         raise PoshmarkPublishError(f"System error: {str(e)}")
 
 
@@ -1992,28 +1992,28 @@ async def get_poshmark_inventory(
     
     start_time = time.time()
     
-    def log(msg, level="info"):
+    def log(msg, level="info", emit_to_frontend=False):
         """Log with timestamp and flush immediately, and emit progress if tracker available"""
         elapsed = time.time() - start_time
         log_msg = f"[{elapsed:.1f}s] {msg}"
         print(f">>> {log_msg}", flush=True)
         sys.stdout.flush()
         
-        # Emit progress message if tracker is available
-        if progress_tracker and job_id:
+        # Only emit critical messages to frontend (success, error, warning, or explicitly marked)
+        if progress_tracker and job_id and (emit_to_frontend or level in ["success", "error", "warning"]):
             progress_tracker.add_message(job_id, msg, level)
     
-    log("Starting Poshmark inventory fetch...")
+    log("Starting Poshmark inventory fetch...", emit_to_frontend=True)
     username, cookies = await get_poshmark_cookies(db, user)
-    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)")
+    log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)", emit_to_frontend=False)
     
     try:
-        log("Initializing Playwright browser...")
+        log("Initializing Playwright browser...", emit_to_frontend=False)
         print(f">>> [SCRAPER] About to create async_playwright context...", flush=True)
         sys.stdout.flush()
         
         async with async_playwright() as p:
-            log("Launching Chromium browser...")
+            log("Launching Chromium browser...", emit_to_frontend=False)
             print(f">>> [SCRAPER] About to launch Chromium with headless=True...", flush=True)
             sys.stdout.flush()
             
@@ -2027,7 +2027,7 @@ async def get_poshmark_inventory(
                     ),
                     timeout=30.0  # 30 second timeout for browser launch
                 )
-                log("Browser launched, creating context...")
+                log("Browser launched, creating context...", emit_to_frontend=False)
                 print(f">>> [SCRAPER] Browser launched successfully, creating context...", flush=True)
                 sys.stdout.flush()
             except asyncio.TimeoutError:
@@ -2045,10 +2045,10 @@ async def get_poshmark_inventory(
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
             )
-            log("Browser context created")
+            log("Browser context created", emit_to_frontend=False)
             
             # 쿠키를 컨텍스트에 추가
-            log("Processing cookies...")
+            log("Processing cookies...", emit_to_frontend=False)
             try:
                 import time
                 current_timestamp = time.time()
@@ -2188,11 +2188,11 @@ async def get_poshmark_inventory(
                 traceback.print_exc()
                 raise PoshmarkAuthError(f"Failed to load cookies: {str(e)}")
             
-            log("Creating new page...")
+            log("Creating new page...", emit_to_frontend=False)
             page = await context.new_page()
             
             # 리소스 차단 최적화: 더 많은 리소스 차단하여 속도 향상
-            log("Setting up resource blocking...")
+            log("Setting up resource blocking...", emit_to_frontend=False)
             async def aggressive_block(route):
                 resource_type = route.request.resource_type
                 url = route.request.url.lower()
@@ -2210,11 +2210,11 @@ async def get_poshmark_inventory(
                     await route.continue_()
             
             await page.route("**/*", aggressive_block)
-            log("Resource blocking configured")
+            log("Resource blocking configured", emit_to_frontend=False)
             
             try:
                 # 로그인 상태 확인 - 최적화: 직접 closet 페이지로 이동하여 확인
-                log("Navigating to feed page to check login status...")
+                log("Navigating to feed page to check login status...", emit_to_frontend=False)
                 print(f">>> [POSHMARK] Navigating to https://poshmark.com/feed...", flush=True)
                 sys.stdout.flush()
                 
@@ -2228,21 +2228,21 @@ async def get_poshmark_inventory(
                     print(f">>> [POSHMARK] ✓ Successfully navigated to https://poshmark.com/feed", flush=True)
                     print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
                     sys.stdout.flush()
-                    log(f"Feed page loaded: {page.url}")
+                    log(f"Feed page loaded: {page.url}", emit_to_frontend=False)
                 except asyncio.TimeoutError:
                     print(f">>> [POSHMARK] ERROR: Navigation to feed page timed out after 20 seconds", flush=True)
                     sys.stdout.flush()
                     raise PoshmarkPublishError("Navigation to Poshmark feed page timed out. The site may be slow or unreachable.")
                 
                 # 빠른 로그인 확인 - wait_for_selector 사용 (최대 3초 대기)
-                log("Checking login status...")
+                log("Checking login status...", emit_to_frontend=False)
                 is_logged_in = False
                 actual_username = username
                 page_url = page.url.lower()
                 
                 # Method 1: URL 체크 (가장 빠름)
                 if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
-                    log("✗ URL indicates login page - not authenticated")
+                    log("✗ URL indicates login page - not authenticated", emit_to_frontend=False)
                     is_logged_in = False
                 else:
                     # Method 2: closet 링크 찾기 (가장 신뢰할 수 있고 username도 함께 추출)
@@ -2262,7 +2262,7 @@ async def get_poshmark_inventory(
                                     if extracted and extracted != "Connected Account":
                                         actual_username = extracted
                                         is_logged_in = True
-                                        log(f"✓ Found closet link, extracted username: {actual_username}")
+                                        log(f"✓ Found closet link, extracted username: {actual_username}", emit_to_frontend=False)
                     except:
                         # closet 링크를 찾지 못했으면 다른 방법 시도
                         try:
@@ -2281,14 +2281,14 @@ async def get_poshmark_inventory(
                                         if extracted and extracted != "Connected Account":
                                             actual_username = extracted
                                             is_logged_in = True
-                                            log(f"✓ Found user link, extracted username: {actual_username}")
+                                            log(f"✓ Found user link, extracted username: {actual_username}", emit_to_frontend=False)
                         except:
                             # 빠른 텍스트 체크
                             try:
                                 page_content = await page.content()
                                 if any(indicator in page_content for indicator in ["Sign Out", "Log Out", "My Closet"]):
                                     is_logged_in = True
-                                    log("✓ Found logged-in indicators in page content")
+                                    log("✓ Found logged-in indicators in page content", emit_to_frontend=False)
                             except:
                                 pass
                 
@@ -2353,26 +2353,26 @@ async def get_poshmark_inventory(
                     # 저장된 username이 유효한지 확인
                     if username and username != "Connected Account" and username.strip():
                         actual_username = username
-                        log(f"Using stored username from extension: {actual_username}")
+                        log(f"Using stored username from extension: {actual_username}", emit_to_frontend=False)
                     else:
                         # Fallback: 쿠키에서 시도
-                        log("Extracting username from cookies as fallback...")
+                        log("Extracting username from cookies as fallback...", emit_to_frontend=False)
                         for cookie in cookies:
                             cookie_name = cookie.get('name', '').lower()
                             if cookie_name in ['un', 'username', 'user_name', 'user']:
                                 cookie_username = cookie.get('value', '').strip()
                                 if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
                                     actual_username = cookie_username
-                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}")
+                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}", emit_to_frontend=False)
                                     break
                 
                 if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
-                    log("✗ ERROR: Could not extract valid username!")
+                    log("✗ ERROR: Could not extract valid username!", level="error")
                     raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your Poshmark account using the Chrome Extension.")
                 
-                log(f"Using username: {actual_username}")
+                log(f"Using username: {actual_username}", emit_to_frontend=False)
                 
-                log(f"Navigating to closet page: {actual_username}")
+                log(f"Navigating to closet page: {actual_username}", emit_to_frontend=False)
                 closet_url = f"https://poshmark.com/closet/{actual_username}"
                 print(f">>> [POSHMARK] Navigating to closet page: {closet_url}", flush=True)
                 sys.stdout.flush()
@@ -2386,22 +2386,22 @@ async def get_poshmark_inventory(
                     print(f">>> [POSHMARK] ✓ Successfully navigated to closet page", flush=True)
                     print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
                     sys.stdout.flush()
-                    log(f"Closet page loaded: {page.url}")
+                    log(f"Closet page loaded: {page.url}", emit_to_frontend=False)
                     
                     # 빠른 체크: listing 링크가 있는지 확인 (최대 2초 대기)
                     try:
                         await page.wait_for_selector('a[href*="/listing/"]', timeout=2000, state="attached")
-                        log("✓ Found listing links on page")
+                        log("✓ Found listing links on page", emit_to_frontend=False)
                     except:
-                        log("⚠ No listing links found immediately, continuing...")
+                        log("⚠ No listing links found immediately, continuing...", emit_to_frontend=False)
                 except asyncio.TimeoutError:
                     print(f">>> [POSHMARK] ERROR: Navigation to closet page timed out after 25 seconds", flush=True)
                     sys.stdout.flush()
                     raise PoshmarkPublishError(f"Navigation to closet page timed out. URL: {closet_url}")
                 except PlaywrightTimeoutError:
-                    log("⚠ Warning: Page load timeout, but continuing with extraction...")
+                    log("⚠ Warning: Page load timeout, but continuing with extraction...", emit_to_frontend=False)
                 
-                log("Starting item extraction...")
+                log("Starting item extraction...", emit_to_frontend=True)
                 
                 # 빠른 스크롤로 동적 콘텐츠 로드 (최소 대기)
                 try:
@@ -2410,7 +2410,7 @@ async def get_poshmark_inventory(
                     await page.evaluate("window.scrollTo(0, 0)")
                     await asyncio.sleep(0.3)  # 0.3초로 단축
                 except Exception as e:
-                    log(f"Warning: Scrolling failed: {e}")
+                    log(f"Warning: Scrolling failed: {e}", emit_to_frontend=False)
                 
                 items = await page.evaluate(r"""
                     () => {
@@ -2576,16 +2576,16 @@ async def get_poshmark_inventory(
                                 };
                             }
                         """)
-                        log(f"Debug info: {debug_info}")
+                        log(f"Debug info: {debug_info}", emit_to_frontend=False)
                     except Exception as e:
-                        log(f"Debug info collection failed: {e}")
+                        log(f"Debug info collection failed: {e}", emit_to_frontend=False)
                     
                     log("⚠ Warning: No items found. The page structure may have changed.", level="warning")
                 
                 return items
                 
             finally:
-                log("Closing browser...")
+                log("Closing browser...", emit_to_frontend=False)
                 await browser.close()
                 log(f"✓ Complete! Total time: {time.time() - start_time:.1f}s", level="success")
     except PoshmarkAuthError as e:
@@ -2593,7 +2593,7 @@ async def get_poshmark_inventory(
         print(f">>> [SCRAPER] PoshmarkAuthError caught: {str(e)}", flush=True)
         traceback.print_exc()
         sys.stdout.flush()
-        log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
+        log(f"✗ Authentication error after {time.time() - start_time:.1f}s", level="error")
         raise
     except Exception as e:
         import traceback
@@ -2604,7 +2604,7 @@ async def get_poshmark_inventory(
         traceback.print_exc()
         sys.stdout.flush()
         error_details = traceback.format_exc()
-        log(f"✗ Error after {time.time() - start_time:.1f}s: {error_details}")
+        log(f"✗ Error after {time.time() - start_time:.1f}s: {error_details}", level="error")
         raise PoshmarkPublishError(f"Failed to fetch inventory: {str(e)}")
 
 
