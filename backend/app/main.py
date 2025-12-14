@@ -61,6 +61,49 @@ def fix_db_schema_startup():
             print(">>> ADDED COLUMN: listings.condition")
         except Exception:
             pass
+
+        # 3. [신규] Poshmark-specific fields
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN size VARCHAR(50)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.size")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN original_price NUMERIC(10, 2)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.original_price")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN category VARCHAR(100)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.category")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN sub_category VARCHAR(100)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.sub_category")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN colors VARCHAR(255)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.colors")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(text("ALTER TABLE listings ADD COLUMN material VARCHAR(255)"))
+            conn.commit()
+            print(">>> ADDED COLUMN: listings.material")
+        except Exception:
+            pass
             
     print("--- Database Check Complete ---")
 
