@@ -496,15 +496,15 @@ async def publish_listing_to_poshmark(
         
         # If we found at least one form element, continue
         if not found_elements:
-                # 봇 탐지 화면인지 확인
+            # 봇 탐지 화면인지 확인
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
-                    raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-                
-                # 스크린샷 저장
-                screenshot_path = "/tmp/debug_failed_form_load.png"
-                await page.screenshot(path=screenshot_path)
-                print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
+                raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
+            
+            # 스크린샷 저장
+            screenshot_path = "/tmp/debug_failed_form_load.png"
+            await page.screenshot(path=screenshot_path)
+            print(f">>> Failed to load form. Screenshot saved to {screenshot_path}")
             print(f">>> Current URL: {page.url}")
             print(f">>> Page title: {await page.title()}")
             
@@ -1022,7 +1022,7 @@ async def publish_listing_to_poshmark(
         for attempt in range(max_retries):
             try:
                 await publish_btn.click(timeout=5000, force=True)
-        print(">>> Clicked publish button")
+                print(">>> Clicked publish button")
                 break
             except Exception as click_error:
                 if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
@@ -1597,7 +1597,7 @@ async def publish_listing_to_poshmark(
             if "/listing/" in current_url and "/create-listing" not in current_url:
                 print(f">>> ✓ Redirected to listing page: {current_url}")
                 # Extract listing ID
-             parts = current_url.split("/")
+                parts = current_url.split("/")
                 listing_id = parts[-1].split("-")[-1] if parts else None
                 print(f">>> Extracted listing ID: {listing_id}")
                 break
@@ -1822,10 +1822,10 @@ async def publish_listing(
             
             # 2. Create context and load cookies
             log("Creating browser context...")
-                    context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                    )
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
