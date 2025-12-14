@@ -524,8 +524,83 @@ async def publish_listing_to_poshmark(
                     if temp_files:
                         try:
                             await file_input.set_input_files(temp_files)
-                            print(f">>> Uploaded {len(temp_files)} images")
-                            await asyncio.sleep(2) # 업로드 처리 대기
+                            print(f">>> Set {len(temp_files)} files to input")
+                            
+                            # CRITICAL: Wait for image thumbnail to render before proceeding
+                            print(f">>> Waiting for image thumbnail to render...")
+                            image_rendered = False
+                            max_wait_time = 15  # Allow up to 15 seconds for image processing
+                            wait_start = asyncio.get_event_loop().time()
+                            
+                            # Try multiple selectors for image thumbnail/preview
+                            thumbnail_selectors = [
+                                '.listing-editor__image-preview',
+                                '[class*="image-preview"]',
+                                '[class*="photo-preview"]',
+                                '[class*="upload-preview"]',
+                                'img[src*="data:image"]',  # Base64 preview
+                                'button[aria-label*="Delete" i]',
+                                'button[aria-label*="Remove" i]',
+                                '[data-test*="image"]',
+                                '[data-test*="photo"]',
+                            ]
+                            
+                            while (asyncio.get_event_loop().time() - wait_start) < max_wait_time:
+                                # Check if any thumbnail indicators are visible
+                                for selector in thumbnail_selectors:
+                                    try:
+                                        thumbnail = await page.query_selector(selector)
+                                        if thumbnail:
+                                            is_visible = await thumbnail.is_visible()
+                                            if is_visible:
+                                                print(f">>> ✓ Image thumbnail rendered (found with selector: {selector})")
+                                                image_rendered = True
+                                                break
+                                    except:
+                                        pass
+                                
+                                if image_rendered:
+                                    break
+                                
+                                # Also check via JavaScript for image preview elements
+                                try:
+                                    has_thumbnail = await page.evaluate("""
+                                        () => {
+                                            // Check for image preview containers
+                                            const previews = document.querySelectorAll('[class*="preview"], [class*="thumbnail"], [class*="image"]');
+                                            for (const preview of previews) {
+                                                if (preview.offsetWidth > 0 && preview.offsetHeight > 0) {
+                                                    // Check if it contains an image or delete button
+                                                    if (preview.querySelector('img') || preview.querySelector('button[aria-label*="Delete" i]')) {
+                                                        return true;
+                                                    }
+                                                }
+                                            }
+                                            // Check for delete/remove buttons on images
+                                            const deleteButtons = document.querySelectorAll('button[aria-label*="Delete" i], button[aria-label*="Remove" i]');
+                                            for (const btn of deleteButtons) {
+                                                if (btn.offsetParent !== null) {
+                                                    return true;
+                                                }
+                                            }
+                                            return false;
+                                        }
+                                    """)
+                                    if has_thumbnail:
+                                        print(f">>> ✓ Image thumbnail rendered (detected via JavaScript)")
+                                        image_rendered = True
+                                        break
+                                except:
+                                    pass
+                                
+                                await asyncio.sleep(0.5)
+                            
+                            if not image_rendered:
+                                print(f">>> ⚠ Warning: Image thumbnail not detected after {max_wait_time}s, but proceeding...")
+                            else:
+                                # Additional wait to ensure image is fully processed
+                                await asyncio.sleep(1)
+                                print(f">>> ✓ Uploaded {len(temp_files)} images and confirmed rendering")
                         finally:
                             for temp_file in temp_files:
                                 try:
@@ -683,10 +758,17 @@ async def publish_listing_to_poshmark(
                                         await handle_modals(page)
                                         await price_field.click(force=True)
                                 
+                                # Clear field first
                                 await price_field.fill("")
-                                await asyncio.sleep(0.3)
-                                await price_field.fill(price)
-                                await asyncio.sleep(0.3)
+                                await asyncio.sleep(0.1)
+                                
+                                # Type the value (don't paste/fill) to trigger React validation
+                                await price_field.type(price, delay=50)  # Type with small delay
+                                await asyncio.sleep(0.2)
+                                
+                                # Press Tab to trigger blur event and validation
+                                await page.keyboard.press('Tab')
+                                await asyncio.sleep(0.2)
                                 
                                 # Verify it was filled
                                 filled_value = await price_field.input_value()
@@ -743,10 +825,17 @@ async def publish_listing_to_poshmark(
                                     await handle_modals(page)
                                     await price_field.click(force=True)
                             
+                            # Clear field first
                             await price_field.fill("")
-                            await asyncio.sleep(0.3)
-                            await price_field.fill(price)
-                            await asyncio.sleep(0.3)
+                            await asyncio.sleep(0.1)
+                            
+                            # Type the value (don't paste/fill) to trigger React validation
+                            await price_field.type(price, delay=50)  # Type with small delay
+                            await asyncio.sleep(0.2)
+                            
+                            # Press Tab to trigger blur event and validation
+                            await page.keyboard.press('Tab')
+                            await asyncio.sleep(0.2)
                             
                             # Verify it was filled
                             filled_value = await price_field.input_value()
@@ -1117,10 +1206,17 @@ async def publish_listing_to_poshmark(
                                         await handle_modals(page)
                                         await price_field.click(force=True)
                                 
+                                # Clear field first
                                 await price_field.fill("")
-                                await asyncio.sleep(0.3)
-                                await price_field.fill(price)
-                                await asyncio.sleep(0.3)
+                                await asyncio.sleep(0.1)
+                                
+                                # Type the value (don't paste/fill) to trigger React validation
+                                await price_field.type(price, delay=50)  # Type with small delay
+                                await asyncio.sleep(0.2)
+                                
+                                # Press Tab to trigger blur event and validation
+                                await page.keyboard.press('Tab')
+                                await asyncio.sleep(0.2)
                                 
                                 filled_value = await price_field.input_value()
                                 if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
@@ -1401,6 +1497,48 @@ async def publish_listing_to_poshmark(
                 except:
                     pass
         
+        # CRITICAL: Immediately check for validation errors after clicking List
+        print(f">>> Checking for validation errors immediately after publish click...")
+        await asyncio.sleep(1)  # Brief wait for page to update
+        
+        try:
+            validation_errors = await page.evaluate("""
+                () => {
+                    const errorTexts = [];
+                    const bodyText = document.body.innerText || '';
+                    
+                    // Check for common validation error messages
+                    if (bodyText.includes('ADD PHOTOS') || bodyText.includes('ADD PHOTOS & VIDEO')) {
+                        errorTexts.push('ADD PHOTOS & VIDEO');
+                    }
+                    if (bodyText.includes('Required') && bodyText.includes('*Required')) {
+                        errorTexts.push('Required');
+                    }
+                    
+                    // Check for error messages in the DOM
+                    const errorElements = document.querySelectorAll('[class*="error"], [class*="required"], [aria-invalid="true"]');
+                    for (const el of errorElements) {
+                        const text = el.innerText || el.textContent || '';
+                        if (text.includes('Required') || text.includes('required') || text.includes('ADD PHOTOS')) {
+                            if (text.trim() && !errorTexts.includes(text.trim())) {
+                                errorTexts.push(text.trim());
+                            }
+                        }
+                    }
+                    
+                    return errorTexts;
+                }
+            """)
+            
+            if validation_errors and len(validation_errors) > 0:
+                error_msg = " | ".join(validation_errors)
+                print(f">>> ✗ ERROR: Validation errors detected immediately after publish: {error_msg}")
+                raise PoshmarkPublishError(f"Listing validation failed. Errors: {error_msg}. The listing was not published. This usually means required fields (like images) were not properly filled.")
+        except PoshmarkPublishError:
+            raise
+        except Exception as e:
+            print(f">>> Could not check validation errors: {e}")
+        
         # Wait for navigation to listing page or success confirmation
         emit_progress("Publishing listing...", critical=True)
         print(f">>> Waiting for publish to complete...")
@@ -1415,6 +1553,23 @@ async def publish_listing_to_poshmark(
             waited += 1
             current_url = page.url
             print(f">>> [{waited}s] Current URL: {current_url}")
+            
+            # Re-check for validation errors periodically
+            if waited % 3 == 0:  # Check every 3 seconds
+                try:
+                    has_errors = await page.evaluate("""
+                        () => {
+                            const bodyText = document.body.innerText || '';
+                            return bodyText.includes('ADD PHOTOS') || bodyText.includes('Required');
+                        }
+                    """)
+                    if has_errors:
+                        print(f">>> ✗ ERROR: Validation errors still present after {waited}s")
+                        raise PoshmarkPublishError("Listing validation failed. Required fields (like images) were not properly processed.")
+                except PoshmarkPublishError:
+                    raise
+                except:
+                    pass
             
             # Check if we're on a listing page
             if "/listing/" in current_url and "/create-listing" not in current_url:
@@ -1646,9 +1801,9 @@ async def publish_listing(
             # 2. Create context and load cookies
             log("Creating browser context...")
             context = await browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                    )
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
             # Navigate to domain first before adding cookies
             log("Navigating to poshmark.com to set cookie domain...")
             page_temp = await context.new_page()
