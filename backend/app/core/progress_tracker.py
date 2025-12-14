@@ -12,7 +12,7 @@ class ProgressTracker:
     def __init__(self):
         self._progress: Dict[str, List[Dict[str, any]]] = {}
         self._status: Dict[str, Dict[str, any]] = {}  # job_id -> {status, latest_message, result}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._cleanup_interval = timedelta(minutes=30)  # Clean up old jobs after 30 minutes
     
     def add_message(self, job_id: str, message: str, level: str = "info"):
