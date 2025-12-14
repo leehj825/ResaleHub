@@ -295,14 +295,14 @@ async def publish_listing_to_poshmark(
     """
     Poshmark에 리스팅 업로드
     """
-    def emit_progress(msg, level="info"):
-        """Emit progress message if tracker available"""
+    def emit_progress(msg, level="info", critical=False):
+        """Emit progress message if tracker available - only critical messages by default"""
         print(f">>> {msg}", flush=True)
-        if progress_tracker and job_id:
+        # Only emit critical messages (success, error, warning) or explicitly marked as critical
+        if progress_tracker and job_id and (critical or level in ["success", "error", "warning"]):
             progress_tracker.add_message(job_id, msg, level)
     
     try:
-        emit_progress("Navigating to Poshmark listing page...")
         # Navigate directly to the correct URL (no guessing)
         listing_url = "https://poshmark.com/create-listing"
         
@@ -409,7 +409,7 @@ async def publish_listing_to_poshmark(
             page_content = await page.content()
             if "Pardon the interruption" in page_content or await page.query_selector("text=Pardon the interruption"):
                 raise PoshmarkPublishError("Bot detected: 'Pardon the interruption' screen active.")
-            
+                
             # 스크린샷 저장
             screenshot_path = "/tmp/debug_failed_form_load.png"
             await page.screenshot(path=screenshot_path)
@@ -418,12 +418,12 @@ async def publish_listing_to_poshmark(
             print(f">>> Page title: {await page.title()}")
             
             raise PoshmarkPublishError(f"Could not find listing form elements. Current URL: {page.url}, Title: {await page.title()}. Likely blocked or page layout changed.")
-                
+        
         print(f">>> ✓ Found {len(found_elements)} form elements")
         
         # 2. 이미지 업로드 (리소스 차단을 피하기 위해 이 부분은 주의 필요)
         if listing_images:
-            emit_progress(f"Uploading {len(listing_images)} images...")
+            emit_progress(f"Uploading {len(listing_images)} images...", critical=True)
             print(f">>> Uploading {len(listing_images)} images...")
             image_input_selector = 'input[type="file"]'
             
@@ -467,7 +467,7 @@ async def publish_listing_to_poshmark(
                 print(f">>> Warning: Image upload failed: {e}")
         
         # 3. 필수 필드 입력
-        emit_progress("Filling listing details (title, description, price)...")
+        emit_progress("Filling listing details...", critical=True)
         print(f">>> Filling listing details...")
         
         # 제목 - try multiple selectors
@@ -521,64 +521,190 @@ async def publish_listing_to_poshmark(
             raise PoshmarkPublishError("Price must be greater than 0")
         
         price_filled = False
-        price_selectors = [
-            'input[name*="price" i]',
-            'input[placeholder*="price" i]',
-            'input[placeholder*="Price" i]',
-            'input[placeholder*="List Price" i]',
-            'input[data-testid*="price"]',
-            'input[name="current_price"]',
-            'input[name="list_price"]',
-            'input[type="number"]',
-            'input[type="text"][inputmode="numeric"]',
-        ]
         
-        # First attempt: fill price on initial form
-        for selector in price_selectors:
-            try:
-                price_field = await page.wait_for_selector(selector, timeout=3000, state="visible")
-                if price_field:
-                    # Check if field is actually visible and enabled
-                    is_visible = await price_field.is_visible()
-                    is_enabled = await price_field.is_enabled()
-                    if is_visible and is_enabled:
-                        # Scroll into view
-                        await price_field.scroll_into_view_if_needed()
-                        await asyncio.sleep(0.3)
+        # First, try to find price field using JavaScript (more reliable for dynamic forms)
+        print(f">>> Searching for price field using JavaScript...")
+        try:
+            price_field_info = await page.evaluate("""
+                () => {
+                    const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
+                    for (const inp of inputs) {
+                        const placeholder = (inp.placeholder || '').toLowerCase();
+                        const name = (inp.name || '').toLowerCase();
+                        const id = (inp.id || '').toLowerCase();
+                        const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
+                        const ariaLabel = (inp.getAttribute('aria-label') || '').toLowerCase();
                         
-                        # Clear and fill
-                        await price_field.click()
-                        await price_field.fill("")
-                        await asyncio.sleep(0.3)
-                        await price_field.fill(price)
-                        await asyncio.sleep(0.3)
+                        // Get parent label text
+                        const label = inp.closest('label')?.textContent?.toLowerCase() || '';
+                        const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
                         
-                        # Verify it was filled
-                        filled_value = await price_field.input_value()
-                        if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                            print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
-                            price_filled = True
-                            break
-            except Exception as e:
-                print(f">>> Price field attempt failed with {selector}: {e}")
-                continue
+                        // Skip originalPrice field - we want the listing price
+                        if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {
+                            continue;
+                        }
+                        
+                        // Look for listing price indicators
+                        const isPriceField = (
+                            placeholder.includes('price') || 
+                            name.includes('price') || 
+                            id.includes('price') || 
+                            label.includes('price') ||
+                            parentText.includes('list price') ||
+                            parentText.includes('selling price') ||
+                            (placeholder === '*required' && !dataVvName.includes('original')) ||
+                            (dataVvName && dataVvName.includes('price') && !dataVvName.includes('original'))
+                        );
+                        
+                        if (isPriceField) {
+                            const rect = inp.getBoundingClientRect();
+                            return {
+                                found: true,
+                                selector: `input[data-vv-name="${inp.getAttribute('data-vv-name')}"], input[placeholder="${inp.placeholder}"], input[type="${inp.type}"][inputmode="${inp.inputMode || ''}"]`,
+                                dataVvName: inp.getAttribute('data-vv-name'),
+                                placeholder: inp.placeholder,
+                                name: inp.name,
+                                visible: rect.width > 0 && rect.height > 0,
+                                value: inp.value
+                            };
+                        }
+                    }
+                    return { found: false };
+                }
+            """)
+            
+            if price_field_info.get('found'):
+                print(f">>> Found potential price field: {price_field_info}")
+                # Try to fill it using the selector
+                try:
+                    # Try multiple selector strategies
+                    selectors_to_try = []
+                    if price_field_info.get('dataVvName'):
+                        selectors_to_try.append(f'input[data-vv-name="{price_field_info["dataVvName"]}"]')
+                    if price_field_info.get('placeholder'):
+                        selectors_to_try.append(f'input[placeholder="{price_field_info["placeholder"]}"]')
+                    selectors_to_try.extend([
+                        'input[type="number"][placeholder*="Required"]',
+                        'input[type="number"]:not([data-vv-name*="original"])',
+                        'input[type="number"]',
+                    ])
+                    
+                    for selector in selectors_to_try:
+                        try:
+                            price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                            if price_field:
+                                # Check it's not originalPrice
+                                data_vv_name = await price_field.get_attribute("data-vv-name")
+                                if data_vv_name and "original" in data_vv_name.lower():
+                                    continue
+                                
+                                # Scroll into view
+                                await price_field.scroll_into_view_if_needed()
+                                await asyncio.sleep(0.3)
+                                
+                                # Clear and fill
+                                await price_field.click()
+                                await price_field.fill("")
+                                await asyncio.sleep(0.3)
+                                await price_field.fill(price)
+                                await asyncio.sleep(0.3)
+                                
+                                # Verify it was filled
+                                filled_value = await price_field.input_value()
+                                if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                    print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
+                                    price_filled = True
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f">>> Could not fill found price field: {e}")
+        except Exception as e:
+            print(f">>> JavaScript price field search failed: {e}")
         
-        # If still not filled, try JavaScript approach
+        # Fallback: try traditional selectors
         if not price_filled:
-            print(f">>> Trying to fill price via JavaScript...")
+            price_selectors = [
+                'input[name*="price" i]:not([name*="original" i])',
+                'input[placeholder*="price" i]:not([placeholder*="original" i])',
+                'input[placeholder*="Price" i]:not([placeholder*="Original" i])',
+                'input[placeholder*="List Price" i]',
+                'input[data-testid*="price"]',
+                'input[name="current_price"]',
+                'input[name="list_price"]',
+                'input[type="number"]:not([data-vv-name*="original"])',
+            ]
+            
+            for selector in price_selectors:
+                try:
+                    price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                    if price_field:
+                        # Double-check it's not originalPrice
+                        data_vv_name = await price_field.get_attribute("data-vv-name")
+                        if data_vv_name and "original" in data_vv_name.lower():
+                            continue
+                        
+                        # Check if field is actually visible and enabled
+                        is_visible = await price_field.is_visible()
+                        is_enabled = await price_field.is_enabled()
+                        if is_visible and is_enabled:
+                            # Scroll into view
+                            await price_field.scroll_into_view_if_needed()
+                            await asyncio.sleep(0.3)
+                            
+                            # Clear and fill
+                            await price_field.click()
+                            await price_field.fill("")
+                            await asyncio.sleep(0.3)
+                            await price_field.fill(price)
+                            await asyncio.sleep(0.3)
+                            
+                            # Verify it was filled
+                            filled_value = await price_field.input_value()
+                            if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
+                                price_filled = True
+                                break
+                except Exception as e:
+                    print(f">>> Price field attempt failed with {selector}: {e}")
+                    continue
+        
+        # If still not filled, try JavaScript direct fill approach
+        if not price_filled:
+            print(f">>> Trying to fill price via JavaScript direct fill...")
             try:
                 filled = await page.evaluate(f"""
                     () => {{
-                        const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[inputmode="numeric"]'));
+                        const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
                         for (const inp of inputs) {{
                             const placeholder = (inp.placeholder || '').toLowerCase();
                             const name = (inp.name || '').toLowerCase();
                             const id = (inp.id || '').toLowerCase();
+                            const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
                             const label = inp.closest('label')?.textContent?.toLowerCase() || '';
-                            if (placeholder.includes('price') || name.includes('price') || id.includes('price') || label.includes('price')) {{
+                            const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
+                            
+                            // Skip originalPrice
+                            if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {{
+                                continue;
+                            }}
+                            
+                            // Look for listing price (not original price)
+                            const isPriceField = (
+                                placeholder.includes('price') || 
+                                name.includes('price') || 
+                                id.includes('price') || 
+                                label.includes('price') ||
+                                parentText.includes('list price') ||
+                                parentText.includes('selling price') ||
+                                (placeholder === '*required' && !dataVvName.includes('original'))
+                            );
+                            
+                            if (isPriceField) {{
                                 inp.value = '{price}';
                                 inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                 inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                inp.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                                 const filledValue = inp.value;
                                 return filledValue === '{price}' || filledValue.replace(/[.,]/g, '') === '{price}'.replace(/[.,]/g, '');
                             }}
@@ -587,7 +713,7 @@ async def publish_listing_to_poshmark(
                     }}
                 """)
                 if filled:
-                    print(f">>> ✓ Filled price via JavaScript")
+                    print(f">>> ✓ Filled price via JavaScript direct fill")
                     price_filled = True
             except Exception as e:
                 print(f">>> Could not fill price via JavaScript: {e}")
@@ -640,7 +766,6 @@ async def publish_listing_to_poshmark(
             print(f">>> Warning: Could not close modals: {e}")
         
         # 4. 발행 버튼 클릭
-        emit_progress("Looking for publish button...")
         print(f">>> Looking for publish button...")
         
         publish_btn = None
@@ -739,7 +864,6 @@ async def publish_listing_to_poshmark(
             pass
         
         if "next" in button_text.lower():
-            emit_progress("Clicked 'Next', filling price on next step...")
             print(f">>> Clicked 'Next', checking for price field on next step...")
             await asyncio.sleep(3)  # Wait longer for next step to load
             
@@ -769,70 +893,189 @@ async def publish_listing_to_poshmark(
             except Exception as e:
                 print(f">>> Could not get page info: {e}")
             
-            # Try to fill price again on the next step - with more selectors
-            expanded_price_selectors = price_selectors + [
-                'input[type="number"]',
-                'input[inputmode="numeric"]',
-                'input[pattern*="[0-9]"]',
-                'input[aria-label*="price" i]',
-                'input[aria-label*="Price" i]',
-                'input[id*="price" i]',
-                'input[class*="price" i]',
-            ]
-            
-            for selector in expanded_price_selectors:
-                try:
-                    price_field = await page.wait_for_selector(selector, timeout=2000, state="visible")
-                    if price_field:
-                        # Check if field is actually visible and enabled
-                        is_visible = await price_field.is_visible()
-                        is_enabled = await price_field.is_enabled()
-                        if is_visible and is_enabled:
-                            # Scroll into view
-                            await price_field.scroll_into_view_if_needed()
-                            await asyncio.sleep(0.5)
+            # Try to find price field on next step using JavaScript first
+            print(f">>> Searching for price field on next step using JavaScript...")
+            try:
+                price_field_info = await page.evaluate("""
+                    () => {
+                        const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
+                        for (const inp of inputs) {
+                            const placeholder = (inp.placeholder || '').toLowerCase();
+                            const name = (inp.name || '').toLowerCase();
+                            const id = (inp.id || '').toLowerCase();
+                            const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
+                            const ariaLabel = (inp.getAttribute('aria-label') || '').toLowerCase();
                             
-                            # Clear and fill
-                            await price_field.click()
-                            await price_field.fill("")
-                            await asyncio.sleep(0.3)
-                            await price_field.fill(price)
-                            await asyncio.sleep(0.3)
+                            const label = inp.closest('label')?.textContent?.toLowerCase() || '';
+                            const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
                             
-                            # Verify it was filled
-                            filled_value = await price_field.input_value()
-                            print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
-                            price_filled = True
-                            break
-                except:
-                    continue
+                            // Skip originalPrice
+                            if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {
+                                continue;
+                            }
+                            
+                            // Look for listing price
+                            const isPriceField = (
+                                placeholder.includes('price') || 
+                                name.includes('price') || 
+                                id.includes('price') || 
+                                label.includes('price') ||
+                                parentText.includes('list price') ||
+                                parentText.includes('selling price') ||
+                                (placeholder === '*required' && !dataVvName.includes('original')) ||
+                                (dataVvName && dataVvName.includes('price') && !dataVvName.includes('original'))
+                            );
+                            
+                            if (isPriceField) {
+                                const rect = inp.getBoundingClientRect();
+                                return {
+                                    found: true,
+                                    selector: `input[data-vv-name="${inp.getAttribute('data-vv-name')}"], input[placeholder="${inp.placeholder}"], input[type="${inp.type}"]`,
+                                    dataVvName: inp.getAttribute('data-vv-name'),
+                                    placeholder: inp.placeholder,
+                                    visible: rect.width > 0 && rect.height > 0
+                                };
+                            }
+                        }
+                        return { found: false };
+                    }
+                """)
+                
+                if price_field_info.get('found'):
+                    print(f">>> Found potential price field on next step: {price_field_info}")
+                    # Try to fill using the found selector
+                    selectors_to_try = []
+                    if price_field_info.get('dataVvName'):
+                        selectors_to_try.append(f'input[data-vv-name="{price_field_info["dataVvName"]}"]')
+                    if price_field_info.get('placeholder'):
+                        selectors_to_try.append(f'input[placeholder="{price_field_info["placeholder"]}"]')
+                    selectors_to_try.extend([
+                        'input[type="number"][placeholder*="Required"]:not([data-vv-name*="original"])',
+                        'input[type="number"]:not([data-vv-name*="original"])',
+                        'input[type="number"]',
+                    ])
+                    
+                    for selector in selectors_to_try:
+                        try:
+                            price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                            if price_field:
+                                # Double-check it's not originalPrice
+                                data_vv_name = await price_field.get_attribute("data-vv-name")
+                                if data_vv_name and "original" in data_vv_name.lower():
+                                    continue
+                                
+                                is_visible = await price_field.is_visible()
+                                is_enabled = await price_field.is_enabled()
+                                if is_visible and is_enabled:
+                                    await price_field.scroll_into_view_if_needed()
+                                    await asyncio.sleep(0.5)
+                                    
+                                    await price_field.click()
+                                    await price_field.fill("")
+                                    await asyncio.sleep(0.3)
+                                    await price_field.fill(price)
+                                    await asyncio.sleep(0.3)
+                                    
+                                    filled_value = await price_field.input_value()
+                                    if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                        print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
+                                        price_filled = True
+                                        break
+                        except:
+                            continue
+            except Exception as e:
+                print(f">>> JavaScript price field search on next step failed: {e}")
             
-            # If still not filled, try using JavaScript
+            # Fallback: try traditional selectors
             if not price_filled:
-                print(f">>> Trying to fill price via JavaScript...")
+                expanded_price_selectors = [
+                    'input[name*="price" i]:not([name*="original" i])',
+                    'input[placeholder*="price" i]:not([placeholder*="original" i])',
+                    'input[placeholder*="Price" i]:not([placeholder*="Original" i])',
+                    'input[type="number"]:not([data-vv-name*="original"])',
+                    'input[inputmode="numeric"]:not([data-vv-name*="original"])',
+                    'input[pattern*="[0-9]"]:not([data-vv-name*="original"])',
+                    'input[aria-label*="price" i]',
+                    'input[id*="price" i]',
+                ]
+                
+                for selector in expanded_price_selectors:
+                    try:
+                        price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                        if price_field:
+                            # Double-check it's not originalPrice
+                            data_vv_name = await price_field.get_attribute("data-vv-name")
+                            if data_vv_name and "original" in data_vv_name.lower():
+                                continue
+                            
+                            is_visible = await price_field.is_visible()
+                            is_enabled = await price_field.is_enabled()
+                            if is_visible and is_enabled:
+                                await price_field.scroll_into_view_if_needed()
+                                await asyncio.sleep(0.5)
+                                
+                                await price_field.click()
+                                await price_field.fill("")
+                                await asyncio.sleep(0.3)
+                                await price_field.fill(price)
+                                await asyncio.sleep(0.3)
+                                
+                                filled_value = await price_field.input_value()
+                                if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                    print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
+                                    price_filled = True
+                                    break
+                    except:
+                        continue
+            
+            # If still not filled, try JavaScript direct fill on next step
+            if not price_filled:
+                print(f">>> Trying to fill price via JavaScript direct fill on next step...")
                 try:
                     filled = await page.evaluate(f"""
                         () => {{
-                            const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[inputmode="numeric"]'));
+                            const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
                             for (const inp of inputs) {{
                                 const placeholder = (inp.placeholder || '').toLowerCase();
                                 const name = (inp.name || '').toLowerCase();
                                 const id = (inp.id || '').toLowerCase();
-                                if (placeholder.includes('price') || name.includes('price') || id.includes('price')) {{
+                                const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
+                                const label = inp.closest('label')?.textContent?.toLowerCase() || '';
+                                const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
+                                
+                                // Skip originalPrice
+                                if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {{
+                                    continue;
+                                }}
+                                
+                                // Look for listing price
+                                const isPriceField = (
+                                    placeholder.includes('price') || 
+                                    name.includes('price') || 
+                                    id.includes('price') || 
+                                    label.includes('price') ||
+                                    parentText.includes('list price') ||
+                                    parentText.includes('selling price') ||
+                                    (placeholder === '*required' && !dataVvName.includes('original'))
+                                );
+                                
+                                if (isPriceField) {{
                                     inp.value = '{price}';
                                     inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                     inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                    return true;
+                                    inp.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+                                    const filledValue = inp.value;
+                                    return filledValue === '{price}' || filledValue.replace(/[.,]/g, '') === '{price}'.replace(/[.,]/g, '');
                                 }}
                             }}
                             return false;
                         }}
                     """)
                     if filled:
-                        print(f">>> ✓ Filled price via JavaScript on next step")
+                        print(f">>> ✓ Filled price via JavaScript direct fill on next step")
                         price_filled = True
                 except Exception as e:
-                    print(f">>> Could not fill price via JavaScript: {e}")
+                    print(f">>> Could not fill price via JavaScript on next step: {e}")
             
             # CRITICAL: If price is still not filled, we cannot proceed
             if not price_filled:
@@ -1025,7 +1268,7 @@ async def publish_listing_to_poshmark(
                     pass
         
         # Wait for navigation to listing page or success confirmation
-        emit_progress("Waiting for publish to complete...")
+        emit_progress("Publishing listing...", critical=True)
         print(f">>> Waiting for publish to complete...")
         current_url = page.url
         listing_id = None
@@ -1233,18 +1476,18 @@ async def publish_listing(
     import time
     start_time = time.time()
     
-    def log(msg, level="info"):
+    def log(msg, level="info", emit_to_frontend=False):
         """Log with timestamp and flush immediately, and emit progress if tracker available"""
         elapsed = time.time() - start_time
         log_msg = f"[PUBLISH {elapsed:.1f}s] {msg}"
         print(f">>> {log_msg}", flush=True)
         sys.stdout.flush()
         
-        # Emit progress message if tracker is available
-        if progress_tracker and job_id:
+        # Only emit critical messages to frontend (success, error, warning, or explicitly marked)
+        if progress_tracker and job_id and (emit_to_frontend or level in ["success", "error", "warning"]):
             progress_tracker.add_message(job_id, msg, level)
     
-    log("Starting Poshmark listing publish...")
+    log("Starting Poshmark listing publish...", emit_to_frontend=True)
     username, cookies = await get_poshmark_cookies(db, user)
     log(f"Retrieved cookies for user: {username} ({len(cookies)} cookies)")
     
@@ -1378,7 +1621,7 @@ async def publish_listing(
                     user_profile = await page.query_selector('.header-user-profile, a[href*="/user/"], a[href*="/closet/"]')
                     if user_profile:
                         is_logged_in = True
-                        log("✓ Cookie authentication successful")
+                        log("✓ Cookie authentication successful", level="success")
                 
                 if not is_logged_in:
                     log("✗ Cookie authentication failed")
@@ -1395,7 +1638,6 @@ async def publish_listing(
                     )
                 
                 # 5. 리스팅 업로드 수행
-                log("Starting listing upload...")
                 result = await publish_listing_to_poshmark(
                     page, listing, listing_images, base_url, settings, job_id, progress_tracker
                 )
@@ -1422,7 +1664,12 @@ async def publish_listing(
         raise PoshmarkPublishError(f"System error: {str(e)}")
 
 
-async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
+async def get_poshmark_inventory(
+    db: Session,
+    user: User,
+    job_id: Optional[str] = None,
+    progress_tracker = None,
+) -> List[dict]:
     """
     Poshmark 인벤토리 조회 (쿠키 기반 인증 사용)
     """
@@ -1430,11 +1677,16 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
     import time
     start_time = time.time()
     
-    def log(msg):
-        """Log with timestamp and flush immediately"""
+    def log(msg, level="info"):
+        """Log with timestamp and flush immediately, and emit progress if tracker available"""
         elapsed = time.time() - start_time
-        print(f">>> [{elapsed:.1f}s] {msg}", flush=True)
+        log_msg = f"[{elapsed:.1f}s] {msg}"
+        print(f">>> {log_msg}", flush=True)
         sys.stdout.flush()
+        
+        # Emit progress message if tracker is available
+        if progress_tracker and job_id:
+            progress_tracker.add_message(job_id, msg, level)
     
     log("Starting Poshmark inventory fetch...")
     username, cookies = await get_poshmark_cookies(db, user)
@@ -1670,9 +1922,9 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                                 pass
                 
                 if is_logged_in:
-                    log("✓ Cookie authentication successful")
+                    log("✓ Cookie authentication successful", level="success")
                 else:
-                    log("✗ Cookie authentication failed - no logged-in indicators found")
+                    log("✗ Cookie authentication failed - no logged-in indicators found", level="error")
                 
                 if not is_logged_in:
                     # Try to get more details about why login failed
@@ -1914,11 +2166,14 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     }
                 """)
                 
-                log(f"Extraction complete: Found {len(items)} items")
+                if len(items) > 0:
+                    log(f"✓ Extraction complete: Found {len(items)} items", level="success")
+                else:
+                    log(f"Extraction complete: Found {len(items)} items", level="warning")
                 
                 if len(items) == 0:
                     # Enhanced debugging
-                    log("⚠ No items found! Collecting detailed debug info...")
+                    log("⚠ No items found! Collecting detailed debug info...", level="warning")
                     try:
                         # Get more page info
                         debug_info = await page.evaluate("""
@@ -1940,14 +2195,14 @@ async def get_poshmark_inventory(db: Session, user: User) -> List[dict]:
                     except Exception as e:
                         log(f"Debug info collection failed: {e}")
                     
-                    log("⚠ Warning: No items found. The page structure may have changed.")
+                    log("⚠ Warning: No items found. The page structure may have changed.", level="warning")
                 
                 return items
                 
             finally:
                 log("Closing browser...")
                 await browser.close()
-                log(f"✓ Complete! Total time: {time.time() - start_time:.1f}s")
+                log(f"✓ Complete! Total time: {time.time() - start_time:.1f}s", level="success")
     except PoshmarkAuthError:
         log(f"✗ Authentication error after {time.time() - start_time:.1f}s")
         raise

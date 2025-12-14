@@ -955,14 +955,58 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
     return resp.json()
 
 @router.get("/poshmark/inventory")
-async def poshmark_inventory(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def poshmark_inventory(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Start Poshmark inventory fetch in background and return job_id.
+    Use /poshmark/inventory-progress/{job_id} to get progress updates.
+    """
     from app.services.poshmark_client import get_poshmark_inventory
-    try:
-        items = await get_poshmark_inventory(db, current_user)
-        return {"items": items, "total": len(items)}
-    except PoshmarkAuthError as e:
-        error_detail = {"detail": str(e)}
-        if e.screenshot_base64:
-            error_detail["screenshot"] = e.screenshot_base64
-        raise HTTPException(status_code=401, detail=error_detail)
-    except Exception as e: raise HTTPException(status_code=500, detail=f"Failed to fetch Poshmark inventory: {str(e)}")
+    from datetime import datetime
+    
+    # Create job_id
+    job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
+    progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
+    
+    # Store result in a way we can retrieve it
+    result_store = {}
+    
+    async def _run_inventory_task():
+        try:
+            items = await get_poshmark_inventory(
+                db=db,
+                user=current_user,
+                job_id=job_id,
+                progress_tracker=progress_tracker
+            )
+            result_store[job_id] = {"items": items, "total": len(items)}
+            progress_tracker.set_status(job_id, "completed", f"✓ Inventory loaded: {len(items)} items", result=result_store[job_id])
+        except PoshmarkAuthError as e:
+            error_detail = {"detail": str(e)}
+            if e.screenshot_base64:
+                error_detail["screenshot"] = e.screenshot_base64
+            progress_tracker.set_status(job_id, "failed", str(e), level="error", result=error_detail)
+        except Exception as e:
+            progress_tracker.set_status(job_id, "failed", f"Failed to fetch inventory: {str(e)}", level="error")
+    
+    background_tasks.add_task(_run_inventory_task)
+    return {"message": "Inventory fetch started", "job_id": job_id}
+
+@router.get("/poshmark/inventory-progress/{job_id}")
+async def get_poshmark_inventory_progress(job_id: str):
+    """Get progress updates for inventory loading"""
+    progress = progress_tracker.get_progress(job_id)
+    status_info = progress_tracker.get_status(job_id)
+    
+    if not status_info:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {
+        "status": status_info["status"],
+        "messages": progress,
+        "latest_message": progress[-1] if progress else None,
+        "result": status_info.get("result"),
+    }

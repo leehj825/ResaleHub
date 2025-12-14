@@ -167,8 +167,8 @@ class MarketplaceService {
   // Poshmark Inventory Methods
   // ============================================
 
-  /// Poshmark 인벤토리 조회
-  Future<List<PoshmarkItem>> getPoshmarkInventory() async {
+  /// Poshmark 인벤토리 조회 (비동기 작업 시작)
+  Future<String> startPoshmarkInventoryFetch() async {
     final baseUrl = _auth.baseUrl;
     final token = await _auth.getToken();
     if (token == null) {
@@ -185,44 +185,62 @@ class MarketplaceService {
     );
 
     if (res.statusCode != 200) {
-      // Try to extract screenshot from error response
-      try {
-        final errorData = jsonDecode(res.body);
-        if (errorData is Map<String, dynamic> && errorData.containsKey('detail')) {
-          final detail = errorData['detail'];
-          if (detail is Map<String, dynamic> && detail.containsKey('screenshot')) {
-            // Return error with screenshot
-            throw PoshmarkInventoryError(
-              detail['detail']?.toString() ?? 'Failed to load Poshmark inventory',
-              screenshotBase64: detail['screenshot'] as String?,
-            );
-          } else if (detail is Map<String, dynamic> && detail.containsKey('detail')) {
-            // Nested detail structure
-            final nestedDetail = detail['detail'];
-            final screenshot = detail['screenshot'] as String?;
-            throw PoshmarkInventoryError(
-              nestedDetail?.toString() ?? 'Failed to load Poshmark inventory',
-              screenshotBase64: screenshot,
-            );
-          } else if (detail is String) {
-            throw PoshmarkInventoryError(detail);
-          }
-        }
-      } catch (e) {
-        // If it's already our custom error, rethrow it
-        if (e is PoshmarkInventoryError) {
-          rethrow;
-        }
-        // If parsing fails, use original error
-      }
-      throw Exception('Failed to load Poshmark inventory: ${res.body}');
+      throw Exception('Failed to start inventory fetch: ${res.body}');
     }
 
-    final data = jsonDecode(res.body);
-    
-    final List<dynamic> itemsJson = data['items'] ?? [];
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data['job_id'] as String;
+  }
 
-    return itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
+  /// Poshmark 인벤토리 진행 상황 조회
+  Future<Map<String, dynamic>> getPoshmarkInventoryProgress(String jobId) async {
+    final baseUrl = _auth.baseUrl;
+    final token = await _auth.getToken();
+    if (token == null) {
+      throw Exception('Not logged in');
+    }
+
+    final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory-progress/$jobId');
+    final res = await http.get(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception('Failed to get inventory progress: ${res.body}');
+    }
+
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// Poshmark 인벤토리 조회 (레거시 - 호환성 유지)
+  Future<List<PoshmarkItem>> getPoshmarkInventory() async {
+    // Start the fetch and wait for completion
+    final jobId = await startPoshmarkInventoryFetch();
+    
+    // Poll for progress
+    while (true) {
+      await Future.delayed(const Duration(seconds: 2));
+      final progress = await getPoshmarkInventoryProgress(jobId);
+      final status = progress['status'] as String;
+      
+      if (status == 'completed') {
+        final result = progress['result'] as Map<String, dynamic>?;
+        if (result != null) {
+          final List<dynamic> itemsJson = result['items'] ?? [];
+          return itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
+        }
+        throw Exception('Inventory fetch completed but no items returned');
+      } else if (status == 'failed') {
+        final latest = progress['latest_message'] as Map<String, dynamic>?;
+        final errorMsg = latest?['message'] ?? 'Failed to load inventory';
+        throw PoshmarkInventoryError(errorMsg);
+      }
+      // Continue polling if status is 'pending'
+    }
   }
 
   // ============================================

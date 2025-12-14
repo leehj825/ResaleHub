@@ -11,6 +11,7 @@ class ProgressTracker:
     
     def __init__(self):
         self._progress: Dict[str, List[Dict[str, any]]] = {}
+        self._status: Dict[str, Dict[str, any]] = {}  # job_id -> {status, latest_message, result}
         self._lock = threading.Lock()
         self._cleanup_interval = timedelta(minutes=30)  # Clean up old jobs after 30 minutes
     
@@ -42,6 +43,23 @@ class ProgressTracker:
         with self._lock:
             if job_id in self._progress:
                 del self._progress[job_id]
+    
+    def set_status(self, job_id: str, status: str, latest_message: str, level: str = "info", result: Optional[Dict] = None):
+        """Set the status of a job (pending, completed, failed)"""
+        with self._lock:
+            self._status[job_id] = {
+                "status": status,
+                "latest_message": latest_message,
+                "level": level,
+                "result": result,
+            }
+            # Also add as a message
+            self.add_message(job_id, latest_message, level)
+    
+    def get_status(self, job_id: str) -> Optional[Dict[str, any]]:
+        """Get the status of a job"""
+        with self._lock:
+            return self._status.get(job_id)
     
     def cleanup_old_jobs(self):
         """Remove old job progress (call periodically)"""

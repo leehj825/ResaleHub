@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:frontend/models/poshmark_item.dart';
@@ -20,6 +21,10 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   bool _isLoading = true;
   String? _error;
   String? _errorScreenshotBase64;
+  String? _inventoryJobId;
+  List<Map<String, dynamic>> _progressMessages = [];
+  Timer? _progressTimer;
+  bool _progressDialogOpen = false;
 
   @override
   void initState() {
@@ -27,23 +32,120 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
     _loadInventory();
   }
 
+  @override
+  void dispose() {
+    _progressTimer?.cancel();
+    super.dispose();
+  }
+
+  void _showProgressDialog() {
+    if (_progressDialogOpen) return;
+    _progressDialogOpen = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _ProgressDialogWidget(
+        progressMessages: _progressMessages,
+        onCancel: () {
+          _progressTimer?.cancel();
+          _progressDialogOpen = false;
+          setState(() => _isLoading = false);
+          Navigator.of(context).pop();
+        },
+      ),
+    );
+  }
+
   Future<void> _loadInventory() async {
     setState(() {
       _isLoading = true;
       _error = null;
+      _progressMessages = [];
+      _inventoryJobId = null;
     });
 
+    _showProgressDialog(); // Show dialog immediately
+
     try {
-      final items = await _marketplaceService.getPoshmarkInventory();
+      final jobId = await _marketplaceService.startPoshmarkInventoryFetch();
       if (!mounted) return;
+
       setState(() {
-        _items = items;
-        _isLoading = false;
-        _error = null;
-        _errorScreenshotBase64 = null;
+        _inventoryJobId = jobId;
+      });
+
+      _progressTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+        if (!mounted || _inventoryJobId == null) {
+          timer.cancel();
+          return;
+        }
+
+        try {
+          final progress = await _marketplaceService.getPoshmarkInventoryProgress(_inventoryJobId!);
+          if (!mounted) return;
+
+          final status = progress['status'] as String;
+          final messages = progress['messages'] as List<dynamic>;
+
+          setState(() {
+            _progressMessages = messages.map((m) => m as Map<String, dynamic>).toList();
+          });
+
+          // Update dialog by closing and reopening with new messages
+          if (mounted && _progressDialogOpen && Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+            _progressDialogOpen = false;
+            _showProgressDialog();
+          }
+
+          if (status == 'completed' || status == 'failed') {
+            timer.cancel();
+            _progressDialogOpen = false;
+            setState(() => _isLoading = false);
+
+            if (mounted && Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            }
+
+            if (status == 'completed') {
+              final result = progress['result'] as Map<String, dynamic>?;
+              if (result != null) {
+                final List<dynamic> itemsJson = result['items'] ?? [];
+                final items = itemsJson.map((json) => PoshmarkItem.fromJson(json)).toList();
+                setState(() {
+                  _items = items;
+                  _error = null;
+                  _errorScreenshotBase64 = null;
+                });
+              }
+            } else {
+              final latest = progress['latest_message'] as Map<String, dynamic>?;
+              final errorMsg = latest?['message'] ?? 'Failed to load inventory';
+              
+              // Check if error has screenshot
+              String? screenshotBase64;
+              if (progress['result'] is Map<String, dynamic>) {
+                final result = progress['result'] as Map<String, dynamic>;
+                screenshotBase64 = result['screenshot'] as String?;
+              }
+              
+              setState(() {
+                _error = errorMsg;
+                _errorScreenshotBase64 = screenshotBase64;
+              });
+            }
+          }
+        } catch (e) {
+          debugPrint('Progress polling error: $e');
+        }
       });
     } catch (e) {
       if (!mounted) return;
+      setState(() => _isLoading = false);
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(); // Close dialog
+      }
       
       // Check if error has screenshot
       String? screenshotBase64;
@@ -54,7 +156,6 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
       setState(() {
         _error = e.toString();
         _errorScreenshotBase64 = screenshotBase64;
-        _isLoading = false;
       });
     }
   }
@@ -243,6 +344,90 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+class _ProgressDialogWidget extends StatelessWidget {
+  final List<Map<String, dynamic>> progressMessages;
+  final VoidCallback onCancel;
+
+  const _ProgressDialogWidget({
+    required this.progressMessages,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 12),
+          Text('Loading Poshmark Inventory...'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: progressMessages.isEmpty
+            ? const Text('Starting inventory fetch...')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: progressMessages.length,
+                itemBuilder: (context, index) {
+                  final msg = progressMessages[index];
+                  final message = msg['message'] as String? ?? '';
+                  final level = msg['level'] as String? ?? 'info';
+
+                  Color color;
+                  IconData icon;
+                  switch (level) {
+                    case 'success':
+                      color = Colors.green;
+                      icon = Icons.check_circle;
+                      break;
+                    case 'error':
+                      color = Colors.red;
+                      icon = Icons.error;
+                      break;
+                    case 'warning':
+                      color = Colors.orange;
+                      icon = Icons.warning;
+                      break;
+                    default:
+                      color = Colors.blue;
+                      icon = Icons.info;
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(icon, size: 16, color: color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            message,
+                            style: TextStyle(fontSize: 13, color: color),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: onCancel,
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }
