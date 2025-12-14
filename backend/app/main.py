@@ -31,79 +31,43 @@ app.add_middleware(
 @app.on_event("startup")
 def fix_db_schema_startup():
     print("--- Checking Database Schema ---")
-    with engine.connect() as conn:
-        # 1. ListingMarketplace 테이블 패치 (기존)
-        try:
-            conn.execute(text("ALTER TABLE listing_marketplaces ADD COLUMN sku VARCHAR"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listing_marketplaces.sku")
-        except Exception:
-            pass # 이미 존재하면 무시
+    # Use autocommit mode for DDL statements
+    with engine.begin() as conn:
+        def add_column_if_not_exists(table_name: str, column_name: str, column_def: str):
+            """Helper function to add a column if it doesn't exist"""
+            try:
+                # Check if column exists
+                check_query = text(f"""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = :table_name AND column_name = :column_name
+                """)
+                result = conn.execute(check_query, {"table_name": table_name, "column_name": column_name}).fetchone()
+                
+                if result is None:
+                    # Column doesn't exist, add it
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}"))
+                    print(f">>> ADDED COLUMN: {table_name}.{column_name}")
+                else:
+                    print(f">>> Column {table_name}.{column_name} already exists, skipping")
+            except Exception as e:
+                print(f">>> Warning: Could not add {table_name}.{column_name}: {e}")
 
-        try:
-            conn.execute(text("ALTER TABLE listing_marketplaces ADD COLUMN offer_id VARCHAR"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listing_marketplaces.offer_id")
-        except Exception:
-            pass
+        # 1. ListingMarketplace 테이블 패치 (기존)
+        add_column_if_not_exists("listing_marketplaces", "sku", "VARCHAR")
+        add_column_if_not_exists("listing_marketplaces", "offer_id", "VARCHAR")
 
         # 2. [신규] Listings 테이블에 sku, condition 추가
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN sku VARCHAR(100)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.sku")
-        except Exception:
-            pass
-        
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN condition VARCHAR(50)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.condition")
-        except Exception:
-            pass
+        add_column_if_not_exists("listings", "sku", "VARCHAR(100)")
+        add_column_if_not_exists("listings", "condition", "VARCHAR(50)")
 
         # 3. [신규] Poshmark-specific fields
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN size VARCHAR(50)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.size")
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN original_price NUMERIC(10, 2)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.original_price")
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN category VARCHAR(100)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.category")
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN sub_category VARCHAR(100)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.sub_category")
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN colors VARCHAR(255)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.colors")
-        except Exception:
-            pass
-
-        try:
-            conn.execute(text("ALTER TABLE listings ADD COLUMN material VARCHAR(255)"))
-            conn.commit()
-            print(">>> ADDED COLUMN: listings.material")
-        except Exception:
-            pass
+        add_column_if_not_exists("listings", "size", "VARCHAR(50)")
+        add_column_if_not_exists("listings", "original_price", "NUMERIC(10, 2)")
+        add_column_if_not_exists("listings", "category", "VARCHAR(100)")
+        add_column_if_not_exists("listings", "sub_category", "VARCHAR(100)")
+        add_column_if_not_exists("listings", "colors", "VARCHAR(255)")
+        add_column_if_not_exists("listings", "material", "VARCHAR(255)")
             
     print("--- Database Check Complete ---")
 
