@@ -12,7 +12,7 @@ import secrets
 
 import httpx
 # [FIX] Body 임포트 추가
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Body, BackgroundTasks, Request
 from app.core.progress_tracker import progress_tracker
 import uuid
 from fastapi.responses import HTMLResponse
@@ -956,6 +956,7 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
 
 @router.get("/poshmark/inventory")
 async def poshmark_inventory(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -966,6 +967,12 @@ async def poshmark_inventory(
     """
     from app.services.poshmark_client import get_poshmark_inventory
     from datetime import datetime
+    
+    print(f">>> [INVENTORY] ===== REQUEST RECEIVED =====")
+    print(f">>> [INVENTORY] Method: {request.method}")
+    print(f">>> [INVENTORY] URL: {request.url}")
+    print(f">>> [INVENTORY] User ID: {current_user.id}")
+    print(f">>> [INVENTORY] User email: {current_user.email}")
     
     # Create job_id
     job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"

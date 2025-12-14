@@ -58,6 +58,7 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   }
 
   Future<void> _loadInventory() async {
+    print('[POSHMARK_INVENTORY] _loadInventory called');
     setState(() {
       _isLoading = true;
       _error = null;
@@ -68,7 +69,9 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
     _showProgressDialog(); // Show dialog immediately
 
     try {
+      print('[POSHMARK_INVENTORY] Calling startPoshmarkInventoryFetch...');
       final jobId = await _marketplaceService.startPoshmarkInventoryFetch();
+      print('[POSHMARK_INVENTORY] Received jobId: $jobId');
       if (!mounted) return;
 
       setState(() {
@@ -137,10 +140,18 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
             }
           }
         } catch (e) {
+          print('[POSHMARK_INVENTORY] Progress polling error: $e');
           debugPrint('Progress polling error: $e');
         }
       });
     } catch (e) {
+      print('[POSHMARK_INVENTORY] EXCEPTION in _loadInventory: $e');
+      print('[POSHMARK_INVENTORY] Exception type: ${e.runtimeType}');
+      if (e is Exception) {
+        print('[POSHMARK_INVENTORY] Exception message: ${e.toString()}');
+      }
+      debugPrint('Error loading inventory: $e');
+      
       if (!mounted) return;
       setState(() => _isLoading = false);
       if (Navigator.of(context).canPop()) {
@@ -157,6 +168,17 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
         _error = e.toString();
         _errorScreenshotBase64 = screenshotBase64;
       });
+      
+      // Show error to user
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to start inventory fetch: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     }
   }
 

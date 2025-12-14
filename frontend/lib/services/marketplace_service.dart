@@ -169,27 +169,48 @@ class MarketplaceService {
 
   /// Poshmark 인벤토리 조회 (비동기 작업 시작)
   Future<String> startPoshmarkInventoryFetch() async {
-    final baseUrl = _auth.baseUrl;
-    final token = await _auth.getToken();
-    if (token == null) {
-      throw Exception('Not logged in');
+    try {
+      final baseUrl = _auth.baseUrl;
+      final token = await _auth.getToken();
+      if (token == null) {
+        print('[MARKETPLACE] ERROR: Not logged in');
+        throw Exception('Not logged in');
+      }
+
+      final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory');
+      print('[MARKETPLACE] Starting inventory fetch to: $url');
+      print('[MARKETPLACE] Token present: ${token.isNotEmpty}');
+      
+      final res = await http.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      ).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          print('[MARKETPLACE] ERROR: Request timeout');
+          throw Exception('Request timeout');
+        },
+      );
+
+      print('[MARKETPLACE] Response status: ${res.statusCode}');
+      print('[MARKETPLACE] Response body: ${res.body}');
+
+      if (res.statusCode != 200) {
+        print('[MARKETPLACE] ERROR: Non-200 status: ${res.statusCode}, body: ${res.body}');
+        throw Exception('Failed to start inventory fetch: ${res.statusCode} - ${res.body}');
+      }
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final jobId = data['job_id'] as String;
+      print('[MARKETPLACE] Successfully started inventory fetch, job_id: $jobId');
+      return jobId;
+    } catch (e) {
+      print('[MARKETPLACE] EXCEPTION in startPoshmarkInventoryFetch: $e');
+      rethrow;
     }
-
-    final url = Uri.parse('$baseUrl/marketplaces/poshmark/inventory');
-    final res = await http.get(
-      url,
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      },
-    );
-
-    if (res.statusCode != 200) {
-      throw Exception('Failed to start inventory fetch: ${res.body}');
-    }
-
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    return data['job_id'] as String;
   }
 
   /// Poshmark 인벤토리 진행 상황 조회
