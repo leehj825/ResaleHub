@@ -957,9 +957,9 @@ async def ebay_me(db: Session = Depends(get_db), current_user: User = Depends(ge
 @router.get("/poshmark/inventory")
 async def poshmark_inventory(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Start Poshmark inventory fetch in background and return job_id.
@@ -968,17 +968,22 @@ async def poshmark_inventory(
     from app.services.poshmark_client import get_poshmark_inventory
     from datetime import datetime
     
-    print(f">>> [INVENTORY] ===== REQUEST RECEIVED =====")
-    print(f">>> [INVENTORY] Method: {request.method}")
-    print(f">>> [INVENTORY] URL: {request.url}")
-    print(f">>> [INVENTORY] User ID: {current_user.id}")
-    print(f">>> [INVENTORY] User email: {current_user.email}")
+    import sys
+    sys.stdout.flush()  # Force flush before logging
+    
+    print(f">>> [INVENTORY] ===== REQUEST RECEIVED =====", flush=True)
+    print(f">>> [INVENTORY] Method: {request.method}", flush=True)
+    print(f">>> [INVENTORY] URL: {request.url}", flush=True)
+    print(f">>> [INVENTORY] User ID: {current_user.id}", flush=True)
+    print(f">>> [INVENTORY] User email: {current_user.email}", flush=True)
+    sys.stdout.flush()
     
     # Create job_id
     job_id = f"poshmark_inventory_{current_user.id}_{datetime.utcnow().timestamp()}"
     progress_tracker.set_status(job_id, "pending", "Starting Poshmark inventory fetch...")
     
-    print(f">>> [INVENTORY] Starting inventory fetch for user {current_user.id}, job_id: {job_id}")
+    print(f">>> [INVENTORY] Starting inventory fetch for user {current_user.id}, job_id: {job_id}", flush=True)
+    sys.stdout.flush()
     
     async def _run_inventory_task():
         try:
@@ -1016,23 +1021,41 @@ async def poshmark_inventory(
         import asyncio
         asyncio.create_task(_run_inventory_task())
     
-    print(f">>> [INVENTORY] Returning response with job_id: {job_id}")
+    print(f">>> [INVENTORY] Returning response with job_id: {job_id}", flush=True)
     response_data = {"message": "Inventory fetch started", "job_id": job_id}
-    print(f">>> [INVENTORY] Response data: {response_data}")
+    print(f">>> [INVENTORY] Response data: {response_data}", flush=True)
+    print(f">>> [INVENTORY] ===== RESPONSE SENT =====", flush=True)
+    import sys
+    sys.stdout.flush()
     return response_data
+
+@router.get("/poshmark/inventory/test")
+async def test_poshmark_inventory_endpoint(
+    current_user: User = Depends(get_current_user),
+):
+    """Simple test endpoint to verify connectivity"""
+    import sys
+    print(f">>> [INVENTORY_TEST] Test endpoint called by user {current_user.id}", flush=True)
+    sys.stdout.flush()
+    return {"status": "ok", "message": "Inventory endpoint is reachable", "user_id": current_user.id}
 
 @router.get("/poshmark/inventory-progress/{job_id}")
 async def get_poshmark_inventory_progress(job_id: str):
     """Get progress updates for inventory loading"""
-    print(f">>> [INVENTORY_PROGRESS] Request for job_id: {job_id}")
+    import sys
+    print(f">>> [INVENTORY_PROGRESS] Request for job_id: {job_id}", flush=True)
+    sys.stdout.flush()
+    
     progress = progress_tracker.get_progress(job_id)
     status_info = progress_tracker.get_status(job_id)
     
-    print(f">>> [INVENTORY_PROGRESS] Status info: {status_info}")
-    print(f">>> [INVENTORY_PROGRESS] Progress messages count: {len(progress)}")
+    print(f">>> [INVENTORY_PROGRESS] Status info: {status_info}", flush=True)
+    print(f">>> [INVENTORY_PROGRESS] Progress messages count: {len(progress)}", flush=True)
+    sys.stdout.flush()
     
     if not status_info:
-        print(f">>> [INVENTORY_PROGRESS] Job not found: {job_id}")
+        print(f">>> [INVENTORY_PROGRESS] Job not found: {job_id}", flush=True)
+        sys.stdout.flush()
         raise HTTPException(status_code=404, detail="Job not found")
     
     response = {
@@ -1041,5 +1064,6 @@ async def get_poshmark_inventory_progress(job_id: str):
         "latest_message": progress[-1] if progress else None,
         "result": status_info.get("result"),
     }
-    print(f">>> [INVENTORY_PROGRESS] Returning response for job_id: {job_id}, status: {status_info['status']}")
+    print(f">>> [INVENTORY_PROGRESS] Returning response for job_id: {job_id}, status: {status_info['status']}", flush=True)
+    sys.stdout.flush()
     return response

@@ -187,26 +187,62 @@ class MarketplaceService {
       print('[MARKETPLACE] URL host: ${url.host}');
       print('[MARKETPLACE] URL path: ${url.path}');
       
-      print('[MARKETPLACE] About to make HTTP GET request...');
-      final stopwatch = Stopwatch()..start();
-      
+      // First, test if we can reach the backend at all
+      print('[MARKETPLACE] Testing backend connectivity...');
       try {
-        final res = await http.get(
-          url,
+        // Test 1: Health endpoint
+        final healthUrl = Uri.parse('$baseUrl/health');
+        print('[MARKETPLACE] Testing health endpoint: $healthUrl');
+        final healthRes = await http.get(healthUrl).timeout(const Duration(seconds: 5));
+        print('[MARKETPLACE] Health check response: ${healthRes.statusCode}');
+        
+        // Test 2: Test inventory endpoint (requires auth)
+        final testUrl = Uri.parse('$baseUrl/marketplaces/poshmark/inventory/test');
+        print('[MARKETPLACE] Testing inventory test endpoint: $testUrl');
+        final testRes = await http.get(
+          testUrl,
           headers: {
             'Authorization': 'Bearer $token',
             'Accept': 'application/json',
           },
-        ).timeout(
+        ).timeout(const Duration(seconds: 10));
+        print('[MARKETPLACE] Test endpoint response: ${testRes.statusCode}, body: ${testRes.body}');
+      } catch (e) {
+        print('[MARKETPLACE] WARNING: Connectivity test failed: $e');
+        print('[MARKETPLACE] This might indicate network connectivity issues');
+        // Continue anyway - maybe the test endpoint doesn't exist
+      }
+      
+      print('[MARKETPLACE] About to make HTTP GET request to inventory endpoint...');
+      final stopwatch = Stopwatch()..start();
+      
+      try {
+        print('[MARKETPLACE] Creating HTTP client...');
+        final client = http.Client();
+        
+        print('[MARKETPLACE] Making GET request...');
+        final request = http.Request('GET', url);
+        request.headers.addAll({
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        });
+        
+        print('[MARKETPLACE] Sending request...');
+        final streamedResponse = await client.send(request).timeout(
           const Duration(seconds: 60),
           onTimeout: () {
             stopwatch.stop();
             print('[MARKETPLACE] ERROR: Request timeout after ${stopwatch.elapsedMilliseconds}ms');
             print('[MARKETPLACE] URL was: $url');
             print('[MARKETPLACE] Base URL was: $baseUrl');
+            client.close();
             throw Exception('Request timeout - the server may be taking too long to respond');
           },
         );
+        
+        print('[MARKETPLACE] Response received, status: ${streamedResponse.statusCode}');
+        final res = await http.Response.fromStream(streamedResponse);
+        client.close();
         
         stopwatch.stop();
         print('[MARKETPLACE] Request completed in ${stopwatch.elapsedMilliseconds}ms');
