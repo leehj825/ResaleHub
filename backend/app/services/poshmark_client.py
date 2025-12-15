@@ -782,82 +782,82 @@ async def publish_listing_to_poshmark(
                         return { found: false };
                     }
                 """)
-            
-            if price_field_info.get('found'):
-                print(f">>> Found potential price field: {price_field_info}")
-                # Try to fill it using the selector
-                try:
-                    # Try multiple selector strategies
-                    selectors_to_try = []
-                    if price_field_info.get('dataVvName'):
-                        selectors_to_try.append(f'input[data-vv-name="{price_field_info["dataVvName"]}"]')
-                    if price_field_info.get('placeholder'):
-                        selectors_to_try.append(f'input[placeholder="{price_field_info["placeholder"]}"]')
-                    selectors_to_try.extend([
-                        'input[type="number"][placeholder*="Required"]',
-                        'input[type="number"]:not([data-vv-name*="original"])',
-                        'input[type="number"]',
-                    ])
-                    
-                    for selector in selectors_to_try:
-                        try:
-                            price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
-                            if price_field:
-                                # STRICT: Check it's not originalPrice
-                                data_vv_name = await price_field.get_attribute("data-vv-name") or ""
-                                name_attr = await price_field.get_attribute("name") or ""
-                                id_attr = await price_field.get_attribute("id") or ""
-                                
-                                if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
-                                    continue
-                                
-                                # Check if field is actually visible and enabled
-                                is_visible = await price_field.is_visible()
-                                is_enabled = await price_field.is_enabled()
-                                if not (is_visible and is_enabled):
-                                    continue
-                                
-                                # Handle modals before clicking
-                                await handle_modals(page)
-                                
-                                # Scroll into view
-                                await price_field.scroll_into_view_if_needed()
-                                await asyncio.sleep(0.3)
-                                
-                                # ALWAYS use force=True to bypass modal interception
-                                try:
-                                    await price_field.click(force=True)
-                                except Exception as click_err:
-                                    if "intercepts pointer events" in str(click_err):
-                                        print(f">>> Modal intercepted price click, handling modals and retrying with force=True...")
-                                        await handle_modals(page)
+                
+                if price_field_info.get('found'):
+                    print(f">>> Found potential price field: {price_field_info}")
+                    # Try to fill it using the selector
+                    try:
+                        # Try multiple selector strategies
+                        selectors_to_try = []
+                        if price_field_info.get('dataVvName'):
+                            selectors_to_try.append(f'input[data-vv-name="{price_field_info["dataVvName"]}"]')
+                        if price_field_info.get('placeholder'):
+                            selectors_to_try.append(f'input[placeholder="{price_field_info["placeholder"]}"]')
+                        selectors_to_try.extend([
+                            'input[type="number"][placeholder*="Required"]',
+                            'input[type="number"]:not([data-vv-name*="original"])',
+                            'input[type="number"]',
+                        ])
+                        
+                        for selector in selectors_to_try:
+                            try:
+                                price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
+                                if price_field:
+                                    # STRICT: Check it's not originalPrice
+                                    data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                                    name_attr = await price_field.get_attribute("name") or ""
+                                    id_attr = await price_field.get_attribute("id") or ""
+                                    
+                                    if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
+                                        continue
+                                    
+                                    # Check if field is actually visible and enabled
+                                    is_visible = await price_field.is_visible()
+                                    is_enabled = await price_field.is_enabled()
+                                    if not (is_visible and is_enabled):
+                                        continue
+                                    
+                                    # Handle modals before clicking
+                                    await handle_modals(page)
+                                    
+                                    # Scroll into view
+                                    await price_field.scroll_into_view_if_needed()
+                                    await asyncio.sleep(0.3)
+                                    
+                                    # ALWAYS use force=True to bypass modal interception
+                                    try:
                                         await price_field.click(force=True)
-                                
-                                # Clear field first
-                                await price_field.fill("")
-                                await asyncio.sleep(0.1)
-                                
-                                # Type the value (don't paste/fill) to trigger React validation
-                                await price_field.type(price, delay=50)  # Type with small delay
-                                await asyncio.sleep(0.2)
-                                
-                                # Press Tab to trigger blur event and validation
-                                await page.keyboard.press('Tab')
-                                await asyncio.sleep(0.2)
-                                
-                                # Verify it was filled
-                                filled_value = await price_field.input_value()
-                                if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                                    print(f">>> ✓ Filled listing price with selector: {selector}, value: {filled_value}")
-                                    price_filled = True
-                                    break
-                        except Exception as e:
-                            print(f">>> Price field attempt failed with {selector}: {e}")
-                            continue
-                except Exception as e:
-                    print(f">>> Could not fill found price field: {e}")
-        except Exception as e:
-            print(f">>> JavaScript price field search failed: {e}")
+                                    except Exception as click_err:
+                                        if "intercepts pointer events" in str(click_err):
+                                            print(f">>> Modal intercepted price click, handling modals and retrying with force=True...")
+                                            await handle_modals(page)
+                                            await price_field.click(force=True)
+                                    
+                                    # Clear field first
+                                    await price_field.fill("")
+                                    await asyncio.sleep(0.1)
+                                    
+                                    # Type the value (don't paste/fill) to trigger React validation
+                                    await price_field.type(price, delay=50)  # Type with small delay
+                                    await asyncio.sleep(0.2)
+                                    
+                                    # Press Tab to trigger blur event and validation
+                                    await page.keyboard.press('Tab')
+                                    await asyncio.sleep(0.2)
+                                    
+                                    # Verify it was filled
+                                    filled_value = await price_field.input_value()
+                                    if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                        print(f">>> ✓ Filled listing price with selector: {selector}, value: {filled_value}")
+                                        price_filled = True
+                                        break
+                            except Exception as e:
+                                print(f">>> Price field attempt failed with {selector}: {e}")
+                                continue
+                    except Exception as e:
+                        print(f">>> Could not fill found price field: {e}")
+            except Exception as e:
+                print(f">>> JavaScript price field search failed: {e}")
         
         # Fallback: try traditional selectors
         if not price_filled:
