@@ -2016,7 +2016,7 @@ async def publish_listing(
                     user_profile = await page.query_selector('.header-user-profile, a[href*="/user/"], a[href*="/closet/"]')
                     if user_profile:
                         is_logged_in = True
-                        log("✓ Cookie authentication successful", level="success")
+                        log("✓ Cookie authentication successful", level="info")
                 
                 if not is_logged_in:
                     log("✗ Cookie authentication failed", level="error")
