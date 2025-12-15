@@ -542,6 +542,11 @@ async def publish_listing_to_poshmark(
                     download_tasks = [download_image(img) for img in listing_images[:8]]
                     temp_files = [f for f in await asyncio.gather(*download_tasks) if f]
                     
+                    if not temp_files:
+                        error_msg = "Failed to download any images. Cannot proceed with listing creation."
+                        print(f">>> ✗ ERROR: {error_msg}")
+                        raise PoshmarkPublishError(error_msg)
+                    
                     if temp_files:
                         try:
                             await file_input.set_input_files(temp_files)
@@ -551,7 +556,7 @@ async def publish_listing_to_poshmark(
                             # Not just that the browser rendered a local preview
                             print(f">>> Waiting for Poshmark to process images (checking for Delete button)...")
                             delete_button_found = False
-                            max_wait_time = 20  # Allow up to 20 seconds for Poshmark to process
+                            max_wait_time = 45  # Allow up to 45 seconds for Poshmark to process (increased from 20s)
                             wait_start = asyncio.get_event_loop().time()
                             
                             # Primary selectors: Look specifically for Delete/Remove buttons
@@ -610,8 +615,14 @@ async def publish_listing_to_poshmark(
                                 await asyncio.sleep(0.5)
                             
                             if not delete_button_found:
-                                error_msg = f"Poshmark did not process images after {max_wait_time}s. Delete button not found. Images may not have been uploaded correctly."
+                                error_msg = f"Poshmark did not process images after {max_wait_time}s. Delete button not found. Images may not have been uploaded correctly. Aborting publish."
                                 print(f">>> ✗ ERROR: {error_msg}")
+                                # Clean up temp files before raising error
+                                for temp_file in temp_files:
+                                    try:
+                                        os.unlink(temp_file)
+                                    except:
+                                        pass
                                 raise PoshmarkPublishError(error_msg)
                             else:
                                 # Additional wait to ensure image is fully processed
@@ -623,8 +634,14 @@ async def publish_listing_to_poshmark(
                                     os.unlink(temp_file)
                                 except:
                                     pass
+            except PoshmarkPublishError:
+                # Re-raise PoshmarkPublishError to fail fast
+                raise
             except Exception as e:
-                print(f">>> Warning: Image upload failed: {e}")
+                # For other exceptions, convert to PoshmarkPublishError to fail fast
+                error_msg = f"Image upload failed: {str(e)}"
+                print(f">>> ✗ ERROR: {error_msg}")
+                raise PoshmarkPublishError(error_msg)
         
         # 3. 필수 필드 입력
         emit_progress("Filling listing details...", critical=True)
