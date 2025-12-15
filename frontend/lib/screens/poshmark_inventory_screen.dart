@@ -22,13 +22,14 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   String? _error;
   String? _errorScreenshotBase64;
   String? _inventoryJobId;
-  List<Map<String, dynamic>> _progressMessages = [];
+  late final ValueNotifier<List<Map<String, dynamic>>> _progressMessagesNotifier;
   Timer? _progressTimer;
   bool _progressDialogOpen = false;
 
   @override
   void initState() {
     super.initState();
+    _progressMessagesNotifier = ValueNotifier<List<Map<String, dynamic>>>([]);
     print('[POSHMARK_INVENTORY] initState called');
     debugPrint('[POSHMARK_INVENTORY] Widget initialized');
     // Use a post-frame callback to ensure context is fully available
@@ -45,6 +46,7 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
   @override
   void dispose() {
     _progressTimer?.cancel();
+    _progressMessagesNotifier.dispose();
     super.dispose();
   }
 
@@ -56,7 +58,7 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
       context: context,
       barrierDismissible: false,
       builder: (context) => _ProgressDialogWidget(
-        progressMessages: _progressMessages,
+        progressMessagesNotifier: _progressMessagesNotifier,
         onCancel: () {
           _progressTimer?.cancel();
           _progressDialogOpen = false;
@@ -73,7 +75,7 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
       setState(() {
         _isLoading = true;
         _error = null;
-        _progressMessages = [];
+        _progressMessagesNotifier.value = [];
         _inventoryJobId = null;
       });
 
@@ -117,16 +119,8 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
           final messages = progress['messages'] as List<dynamic>;
           print('[POSHMARK_INVENTORY] Status: $status, Messages count: ${messages.length}');
 
-          setState(() {
-            _progressMessages = messages.map((m) => m as Map<String, dynamic>).toList();
-          });
-
-          // Update dialog by closing and reopening with new messages
-          if (mounted && _progressDialogOpen && Navigator.of(context).canPop()) {
-            Navigator.of(context).pop();
-            _progressDialogOpen = false;
-            _showProgressDialog();
-          }
+          // Update dialog content in-place using ValueNotifier
+          _progressMessagesNotifier.value = messages.map((m) => m as Map<String, dynamic>).toList();
 
           if (status == 'completed' || status == 'failed') {
             timer.cancel();
@@ -434,11 +428,11 @@ class _PoshmarkInventoryScreenState extends State<PoshmarkInventoryScreen> {
 }
 
 class _ProgressDialogWidget extends StatelessWidget {
-  final List<Map<String, dynamic>> progressMessages;
+  final ValueNotifier<List<Map<String, dynamic>>> progressMessagesNotifier;
   final VoidCallback onCancel;
 
   const _ProgressDialogWidget({
-    required this.progressMessages,
+    required this.progressMessagesNotifier,
     required this.onCancel,
   });
 
@@ -464,59 +458,66 @@ class _ProgressDialogWidget extends StatelessWidget {
       ),
       content: SizedBox(
         width: double.maxFinite,
-        child: progressMessages.isEmpty
-            ? const Text('Starting inventory fetch...')
-            : ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 400),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: progressMessages.length,
-                  itemBuilder: (context, index) {
-                    final msg = progressMessages[index];
-                    final message = msg['message'] as String? ?? '';
-                    final level = msg['level'] as String? ?? 'info';
+        child: ValueListenableBuilder<List<Map<String, dynamic>>>(
+          valueListenable: progressMessagesNotifier,
+          builder: (context, progressMessages, _) {
+            if (progressMessages.isEmpty) {
+              return const Text('Starting inventory fetch...');
+            }
+            
+            return ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 400),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: progressMessages.length,
+                itemBuilder: (context, index) {
+                  final msg = progressMessages[index];
+                  final message = msg['message'] as String? ?? '';
+                  final level = msg['level'] as String? ?? 'info';
 
-                    Color color;
-                    IconData icon;
-                    switch (level) {
-                      case 'success':
-                        color = Colors.green;
-                        icon = Icons.check_circle;
-                        break;
-                      case 'error':
-                        color = Colors.red;
-                        icon = Icons.error;
-                        break;
-                      case 'warning':
-                        color = Colors.orange;
-                        icon = Icons.warning;
-                        break;
-                      default:
-                        color = Colors.blue;
-                        icon = Icons.info;
-                    }
+                  Color color;
+                  IconData icon;
+                  switch (level) {
+                    case 'success':
+                      color = Colors.green;
+                      icon = Icons.check_circle;
+                      break;
+                    case 'error':
+                      color = Colors.red;
+                      icon = Icons.error;
+                      break;
+                    case 'warning':
+                      color = Colors.orange;
+                      icon = Icons.warning;
+                      break;
+                    default:
+                      color = Colors.blue;
+                      icon = Icons.info;
+                  }
 
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(icon, size: 16, color: color),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              message,
-                              style: TextStyle(fontSize: 13, color: color),
-                              softWrap: true,
-                              overflow: TextOverflow.visible,
-                            ),
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(icon, size: 16, color: color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            message,
+                            style: TextStyle(fontSize: 13, color: color),
+                            softWrap: true,
+                            overflow: TextOverflow.visible,
                           ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
+            );
+          },
+        ),
       ),
       actions: [
         TextButton(
