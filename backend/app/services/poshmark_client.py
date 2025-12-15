@@ -578,93 +578,162 @@ async def publish_listing_to_poshmark(
                         try:
                             # PRIMARY METHOD: Use set_input_files
                             print(f">>> Attempting file upload via set_input_files...")
-                            try:
-                                await file_input.set_input_files(temp_files)
-                                print(f">>> Set {len(temp_files)} files to input")
+                            await file_input.set_input_files(temp_files)
+                            print(f">>> Set {len(temp_files)} files to input")
+                            
+                            # CRITICAL: Force Poshmark's React app to recognize the file change
+                            # Dispatch events manually to trigger upload
+                            print(f">>> Dispatching change and input events to trigger upload...")
+                            await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                            await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
+                            print(f">>> Events dispatched, waiting for visual confirmation (5s timeout)...")
+                            
+                            # Quick visual check: Wait 5 seconds for thumbnail/delete button
+                            quick_visual_check = False
+                            quick_check_timeout = 5  # 5 seconds
+                            quick_check_start = asyncio.get_event_loop().time()
+                            
+                            quick_visual_selectors = [
+                                'button[aria-label="Delete"]',
+                                'button[aria-label="Remove"]',
+                                'button[aria-label*="Delete" i]',
+                                'button[aria-label*="Remove" i]',
+                                '.listing-editor__image-delete-btn',
+                                '[class*="delete-btn"]',
+                                # FIXED: Only check images inside listing editor preview (not general site images)
+                                '.listing-editor__image-preview img',
+                                '[data-test="listing-image"] img',
+                                '[data-test="listing-image"]',
+                            ]
+                            
+                            while (asyncio.get_event_loop().time() - quick_check_start) < quick_check_timeout:
+                                for selector in quick_visual_selectors:
+                                    try:
+                                        element = await page.query_selector(selector)
+                                        if element and await element.is_visible():
+                                            print(f">>> ✓ Quick visual confirmation found (selector: {selector})")
+                                            quick_visual_check = True
+                                            break
+                                    except:
+                                        pass
                                 
-                                # CRITICAL: Force Poshmark's React app to recognize the file change
-                                # Dispatch events manually to trigger upload
-                                print(f">>> Dispatching change and input events to trigger upload...")
-                                await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
-                                await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
-                                print(f">>> Events dispatched, waiting for network upload...")
-                                upload_method = "set_input_files"
-                            except Exception as set_input_error:
-                                print(f">>> ⚠ set_input_files failed: {set_input_error}")
-                                print(f">>> Attempting fallback: Drag and drop method...")
+                                if quick_visual_check:
+                                    break
+                                await asyncio.sleep(0.3)
+                            
+                            # If no visual confirmation in 5 seconds, try drag and drop fallback
+                            if not quick_visual_check:
+                                print(f">>> Standard upload failed to show visual confirmation. Attempting Drag & Drop fallback...")
                                 
-                                # FALLBACK METHOD: Drag and drop
-                                try:
-                                    # Find drop zone
-                                    drop_zone_selectors = [
-                                        'div[class*="upload"]',
-                                        'div[class*="drop"]',
-                                        'div[class*="dropzone"]',
-                                        'div[class*="drop-zone"]',
-                                        '.upload-zone',
-                                        '[data-testid*="upload"]',
-                                        '[data-testid*="drop"]',
-                                    ]
+                                # Find drop zone with specific Poshmark selectors
+                                drop_zone_selectors = [
+                                    '.listing-editor__image-upload-container',
+                                    '.drag-drop-box',
+                                    'div[class*="upload-container"]',
+                                    'div[class*="drag-drop"]',
+                                    'div[class*="dropzone"]',
+                                    'div[class*="drop-zone"]',
+                                    'div:has-text("drag them in")',
+                                    'div:has-text("drag and drop")',
+                                    '[data-testid*="upload"]',
+                                    '[data-testid*="drop"]',
+                                ]
+                                
+                                drop_zone_found = None
+                                drop_zone_selector = None
+                                
+                                for selector in drop_zone_selectors:
+                                    try:
+                                        drop_zone_elem = await page.query_selector(selector)
+                                        if drop_zone_elem:
+                                            is_visible = await drop_zone_elem.is_visible()
+                                            if is_visible:
+                                                drop_zone_found = drop_zone_elem
+                                                drop_zone_selector = selector
+                                                print(f">>> Found drop zone: {selector}")
+                                                break
+                                    except:
+                                        pass
+                                
+                                if drop_zone_found:
+                                    # Implement drag and drop using base64 file transfer
+                                    import base64
+                                    import mimetypes
                                     
-                                    drop_zone = None
-                                    for selector in drop_zone_selectors:
+                                    for temp_file in temp_files:
                                         try:
-                                            drop_zone = await page.query_selector(selector)
-                                            if drop_zone:
-                                                is_visible = await drop_zone.is_visible()
-                                                if is_visible:
-                                                    print(f">>> Found drop zone: {selector}")
-                                                    break
-                                        except:
-                                            pass
-                                    
-                                    if drop_zone:
-                                        # FALLBACK: Try clicking the drop zone to trigger file picker, then set files
-                                        print(f">>> Attempting drag and drop fallback for {len(temp_files)} files...")
-                                        try:
-                                            # Click the drop zone to potentially trigger file input
-                                            await drop_zone.click()
-                                            await asyncio.sleep(0.5)
+                                            file_name = os.path.basename(temp_file)
+                                            # Detect MIME type
+                                            mime_type, _ = mimetypes.guess_type(temp_file)
+                                            if not mime_type:
+                                                mime_type = "image/jpeg"  # Default
                                             
-                                            # Try to find file input again (might have been created)
-                                            file_input_retry = await page.query_selector('input[type="file"]')
-                                            if file_input_retry:
-                                                await file_input_retry.set_input_files(temp_files)
-                                                await file_input_retry.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
-                                                await file_input_retry.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
-                                                print(f">>> File input found after drop zone click, files set via fallback method")
-                                                upload_method = "drag_and_drop_fallback"
-                                            else:
-                                                # Last resort: Try to trigger file input programmatically
-                                                await page.evaluate("""
-                                                    () => {
-                                                        const fileInput = document.querySelector('input[type="file"]');
-                                                        if (fileInput) {
-                                                            fileInput.click();
-                                                        }
+                                            # Read file and encode to base64
+                                            with open(temp_file, "rb") as f:
+                                                file_content = base64.b64encode(f.read()).decode("utf-8")
+                                            
+                                            # Inject JS to simulate drop with DataTransfer
+                                            await page.evaluate("""
+                                                async ({selector, fileBase64, fileName, mimeType}) => {
+                                                    const dropZone = document.querySelector(selector);
+                                                    if (!dropZone) {
+                                                        throw new Error(`Drop zone not found: ${selector}`);
                                                     }
-                                                """)
-                                                await asyncio.sleep(0.5)
-                                                file_input_final = await page.query_selector('input[type="file"]')
-                                                if file_input_final:
-                                                    await file_input_final.set_input_files(temp_files)
-                                                    await file_input_final.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
-                                                    print(f">>> File input triggered programmatically, files set")
-                                                    upload_method = "programmatic_trigger"
-                                                else:
-                                                    raise Exception("Could not find file input for drag and drop fallback")
-                                        except Exception as fallback_error:
-                                            print(f">>> ⚠ Drag and drop fallback failed: {fallback_error}")
-                                            raise Exception(f"Drag and drop fallback failed: {fallback_error}")
-                                        
-                                        await asyncio.sleep(1)  # Wait for processing
-                                    else:
-                                        print(f">>> ⚠ Could not find drop zone for drag and drop fallback")
-                                        raise Exception("Both set_input_files and drag_and_drop failed")
-                                        
-                                except Exception as drag_drop_error:
-                                    print(f">>> ✗ Drag and drop fallback also failed: {drag_drop_error}")
-                                    raise Exception(f"All upload methods failed. set_input_files: {set_input_error}, drag_and_drop: {drag_drop_error}")
+                                                    
+                                                    // Convert base64 to blob
+                                                    const blob = await fetch(`data:${mimeType};base64,${fileBase64}`).then(r => r.blob());
+                                                    const file = new File([blob], fileName, { type: mimeType });
+                                                    
+                                                    // Create DataTransfer object
+                                                    const dataTransfer = new DataTransfer();
+                                                    dataTransfer.items.add(file);
+                                                    
+                                                    // Dispatch drag events in sequence
+                                                    dropZone.dispatchEvent(new DragEvent('dragenter', {
+                                                        bubbles: true,
+                                                        cancelable: true,
+                                                        dataTransfer: dataTransfer
+                                                    }));
+                                                    
+                                                    dropZone.dispatchEvent(new DragEvent('dragover', {
+                                                        bubbles: true,
+                                                        cancelable: true,
+                                                        dataTransfer: dataTransfer
+                                                    }));
+                                                    
+                                                    // Finally dispatch drop event
+                                                    const dropEvent = new DragEvent('drop', {
+                                                        bubbles: true,
+                                                        cancelable: true,
+                                                        dataTransfer: dataTransfer
+                                                    });
+                                                    dropZone.dispatchEvent(dropEvent);
+                                                    
+                                                    // Also trigger change event on any file input inside
+                                                    const fileInput = dropZone.querySelector('input[type="file"]') || document.querySelector('input[type="file"]');
+                                                    if (fileInput) {
+                                                        fileInput.files = dataTransfer.files;
+                                                        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+                                                        fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                                    }
+                                                }
+                                            """, {
+                                                "selector": drop_zone_selector,
+                                                "fileBase64": file_content,
+                                                "fileName": file_name,
+                                                "mimeType": mime_type
+                                            })
+                                            
+                                            print(f">>> Drag and drop event dispatched for {file_name}")
+                                            await asyncio.sleep(0.5)  # Small delay between files
+                                            
+                                        except Exception as file_error:
+                                            print(f">>> ⚠ Failed to drag and drop {os.path.basename(temp_file)}: {file_error}")
+                                    
+                                    print(f">>> Drag and drop fallback completed, waiting for confirmation...")
+                                    await asyncio.sleep(1)  # Wait for processing
+                                else:
+                                    print(f">>> ⚠ Could not find drop zone for drag and drop fallback")
                             
                             # PRIMARY: Wait for network response - the "real" confirmation
                             # This is more reliable than visual checks
@@ -693,7 +762,8 @@ async def publish_listing_to_poshmark(
                             max_wait_time = 45  # Allow up to 45 seconds for visual confirmation
                             wait_start = asyncio.get_event_loop().time()
                             
-                            # Expanded selectors: Delete buttons + uploaded images (cloudfront)
+                            # FIXED: Strictly scoped selectors - only check images in listing editor preview
+                            # Old selectors like 'img[src*="cloudfront"]' were too broad and matched avatars/site icons
                             visual_selectors = [
                                 'button[aria-label="Delete"]',
                                 'button[aria-label="Remove"]',
@@ -702,9 +772,10 @@ async def publish_listing_to_poshmark(
                                 '.listing-editor__image-delete-btn',
                                 '[class*="delete-btn"]',
                                 '[class*="remove-btn"]',
-                                'img[src*="cloudfront"]',  # Poshmark images are hosted on CloudFront
-                                'img[src*="amazonaws"]',   # Alternative AWS CDN
-                                'img[src*="poshmark.com"]', # Direct Poshmark CDN
+                                # CRITICAL FIX: Only check images inside listing editor preview container
+                                '.listing-editor__image-preview img',  # Specific to the listing grid
+                                '[data-test="listing-image"] img',     # Robust data attribute
+                                '[data-test="listing-image"]',         # Also check the container itself
                             ]
                             
                             while (asyncio.get_event_loop().time() - wait_start) < max_wait_time:
@@ -739,9 +810,9 @@ async def publish_listing_to_poshmark(
                                                     return true;
                                                 }
                                             }
-                                            // Check for uploaded images (cloudfront, aws, poshmark CDN)
+                                            // FIXED: Only check images inside listing editor preview (not general site images)
                                             const uploadedImages = document.querySelectorAll(
-                                                'img[src*="cloudfront"], img[src*="amazonaws"], img[src*="poshmark.com"]'
+                                                '.listing-editor__image-preview img, [data-test="listing-image"] img, [data-test="listing-image"]'
                                             );
                                             for (const img of uploadedImages) {
                                                 if (img.offsetParent !== null && img.offsetWidth > 0 && img.offsetHeight > 0) {
@@ -2187,23 +2258,26 @@ async def publish_listing(
             
             page = await context.new_page()
             
-            # 3. 리소스 차단 적용 (발행 시에는 이미지만 차단, 스크립트는 허용)
-            # 발행 페이지는 동적 콘텐츠가 필요하므로 스크립트는 허용
-            async def selective_block_publish(route):
-                resource_type = route.request.resource_type
-                url = route.request.url.lower()
-                
-                # 이미지, 폰트, 미디어는 차단
-                if resource_type in ["image", "font", "media"]:
-                    await route.abort()
-                # 광고/추적 스크립트만 차단 (필수 스크립트는 허용)
-                elif resource_type == "script" and any(domain in url for domain in ["google-analytics", "googletagmanager", "facebook", "doubleclick", "adservice"]):
-                    await route.abort()
-                else:
-                    await route.continue_()
-            
-            await page.route("**/*", selective_block_publish)
-            log("Resource blocking configured", emit_to_frontend=False)
+            # 3. 리소스 차단 DISABLED during publish (CRITICAL FIX)
+            # Poshmark's image uploader requires full network access to send image blobs
+            # and receive CloudFront URLs. Blocking resources breaks the upload process.
+            # 
+            # DISABLED: Resource blocking removed to allow image uploads
+            # async def selective_block_publish(route):
+            #     resource_type = route.request.resource_type
+            #     url = route.request.url.lower()
+            #     
+            #     # 이미지, 폰트, 미디어는 차단
+            #     if resource_type in ["image", "font", "media"]:
+            #         await route.abort()
+            #     # 광고/추적 스크립트만 차단 (필수 스크립트는 허용)
+            #     elif resource_type == "script" and any(domain in url for domain in ["google-analytics", "googletagmanager", "facebook", "doubleclick", "adservice"]):
+            #         await route.abort()
+            #     else:
+            #         await route.continue_()
+            # 
+            # await page.route("**/*", selective_block_publish)
+            log("Resource blocking DISABLED for image upload compatibility", emit_to_frontend=False)
             
             try:
                 # 4. 로그인 상태 확인
