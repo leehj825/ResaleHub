@@ -392,6 +392,33 @@ async def publish_listing_to_poshmark(
         if progress_tracker and job_id and (critical or level in ["success", "error", "warning"]):
             progress_tracker.add_message(job_id, msg, level)
     
+    # DEEP DEBUGGING: Capture browser console logs and network requests
+    print(f">>> [DEBUG] Setting up browser console and network listeners...")
+    
+    def console_handler(msg):
+        """Capture all browser console messages"""
+        print(f">>> [BROWSER_CONSOLE] {msg.type}: {msg.text}", flush=True)
+    
+    async def response_handler(response):
+        """Capture failed network requests (status 400+)"""
+        if response.status >= 400:
+            try:
+                print(f">>> [BROWSER_NETWORK] FAILED: {response.status} {response.method} {response.url}", flush=True)
+                # Try to get response body for error details (async)
+                try:
+                    response_body = await response.text()
+                    if response_body:
+                        body_preview = response_body[:500] if len(response_body) > 500 else response_body
+                        print(f">>> [BROWSER_NETWORK] Response body preview: {body_preview}", flush=True)
+                except:
+                    pass
+            except:
+                pass
+    
+    page.on("console", console_handler)
+    page.on("response", response_handler)
+    print(f">>> [DEBUG] Browser listeners attached")
+    
     try:
         # Navigate directly to the correct URL (no guessing)
         listing_url = "https://poshmark.com/create-listing"
@@ -549,15 +576,95 @@ async def publish_listing_to_poshmark(
                     
                     if temp_files:
                         try:
-                            await file_input.set_input_files(temp_files)
-                            print(f">>> Set {len(temp_files)} files to input")
-                            
-                            # CRITICAL: Force Poshmark's React app to recognize the file change
-                            # Dispatch events manually to trigger upload
-                            print(f">>> Dispatching change and input events to trigger upload...")
-                            await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
-                            await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
-                            print(f">>> Events dispatched, waiting for network upload...")
+                            # PRIMARY METHOD: Use set_input_files
+                            print(f">>> Attempting file upload via set_input_files...")
+                            try:
+                                await file_input.set_input_files(temp_files)
+                                print(f">>> Set {len(temp_files)} files to input")
+                                
+                                # CRITICAL: Force Poshmark's React app to recognize the file change
+                                # Dispatch events manually to trigger upload
+                                print(f">>> Dispatching change and input events to trigger upload...")
+                                await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                                await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
+                                print(f">>> Events dispatched, waiting for network upload...")
+                                upload_method = "set_input_files"
+                            except Exception as set_input_error:
+                                print(f">>> ⚠ set_input_files failed: {set_input_error}")
+                                print(f">>> Attempting fallback: Drag and drop method...")
+                                
+                                # FALLBACK METHOD: Drag and drop
+                                try:
+                                    # Find drop zone
+                                    drop_zone_selectors = [
+                                        'div[class*="upload"]',
+                                        'div[class*="drop"]',
+                                        'div[class*="dropzone"]',
+                                        'div[class*="drop-zone"]',
+                                        '.upload-zone',
+                                        '[data-testid*="upload"]',
+                                        '[data-testid*="drop"]',
+                                    ]
+                                    
+                                    drop_zone = None
+                                    for selector in drop_zone_selectors:
+                                        try:
+                                            drop_zone = await page.query_selector(selector)
+                                            if drop_zone:
+                                                is_visible = await drop_zone.is_visible()
+                                                if is_visible:
+                                                    print(f">>> Found drop zone: {selector}")
+                                                    break
+                                        except:
+                                            pass
+                                    
+                                    if drop_zone:
+                                        # FALLBACK: Try clicking the drop zone to trigger file picker, then set files
+                                        print(f">>> Attempting drag and drop fallback for {len(temp_files)} files...")
+                                        try:
+                                            # Click the drop zone to potentially trigger file input
+                                            await drop_zone.click()
+                                            await asyncio.sleep(0.5)
+                                            
+                                            # Try to find file input again (might have been created)
+                                            file_input_retry = await page.query_selector('input[type="file"]')
+                                            if file_input_retry:
+                                                await file_input_retry.set_input_files(temp_files)
+                                                await file_input_retry.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                                                await file_input_retry.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
+                                                print(f">>> File input found after drop zone click, files set via fallback method")
+                                                upload_method = "drag_and_drop_fallback"
+                                            else:
+                                                # Last resort: Try to trigger file input programmatically
+                                                await page.evaluate("""
+                                                    () => {
+                                                        const fileInput = document.querySelector('input[type="file"]');
+                                                        if (fileInput) {
+                                                            fileInput.click();
+                                                        }
+                                                    }
+                                                """)
+                                                await asyncio.sleep(0.5)
+                                                file_input_final = await page.query_selector('input[type="file"]')
+                                                if file_input_final:
+                                                    await file_input_final.set_input_files(temp_files)
+                                                    await file_input_final.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                                                    print(f">>> File input triggered programmatically, files set")
+                                                    upload_method = "programmatic_trigger"
+                                                else:
+                                                    raise Exception("Could not find file input for drag and drop fallback")
+                                        except Exception as fallback_error:
+                                            print(f">>> ⚠ Drag and drop fallback failed: {fallback_error}")
+                                            raise Exception(f"Drag and drop fallback failed: {fallback_error}")
+                                        
+                                        await asyncio.sleep(1)  # Wait for processing
+                                    else:
+                                        print(f">>> ⚠ Could not find drop zone for drag and drop fallback")
+                                        raise Exception("Both set_input_files and drag_and_drop failed")
+                                        
+                                except Exception as drag_drop_error:
+                                    print(f">>> ✗ Drag and drop fallback also failed: {drag_drop_error}")
+                                    raise Exception(f"All upload methods failed. set_input_files: {set_input_error}, drag_and_drop: {drag_drop_error}")
                             
                             # PRIMARY: Wait for network response - the "real" confirmation
                             # This is more reliable than visual checks
@@ -657,6 +764,56 @@ async def publish_listing_to_poshmark(
                             if not upload_confirmed and not visual_confirmed:
                                 error_msg = f"Poshmark did not process images after {max_wait_time}s. Neither network upload nor visual confirmation found. Images may not have been uploaded correctly. Aborting publish."
                                 print(f">>> ✗ ERROR: {error_msg}")
+                                
+                                # DEEP DEBUGGING: Dump page source on failure
+                                try:
+                                    print(f">>> [DEBUG] Dumping page source for debugging...")
+                                    page_content = await page.content()
+                                    page_body_preview = page_content[:2000] if len(page_content) > 2000 else page_content
+                                    print(f">>> [DEBUG] Page source preview (first 2000 chars):")
+                                    print(f">>> {page_body_preview}")
+                                    
+                                    # Also check for error messages in the page
+                                    error_elements = await page.evaluate("""
+                                        () => {
+                                            const errors = [];
+                                            // Check for common error selectors
+                                            const errorSelectors = [
+                                                '.error', '.error-message', '[class*="error"]',
+                                                '[role="alert"]', '.alert-danger', '.alert-error',
+                                                '[data-testid*="error"]', '[aria-label*="error" i]'
+                                            ];
+                                            errorSelectors.forEach(selector => {
+                                                const elements = document.querySelectorAll(selector);
+                                                elements.forEach(el => {
+                                                    const text = el.innerText || el.textContent || '';
+                                                    if (text.trim()) {
+                                                        errors.push(text.trim());
+                                                    }
+                                                });
+                                            });
+                                            return errors.slice(0, 10); // Return first 10 errors
+                                        }
+                                    """)
+                                    if error_elements:
+                                        print(f">>> [DEBUG] Found error messages on page: {error_elements}")
+                                    
+                                    # Check for modals or overlays
+                                    modal_check = await page.evaluate("""
+                                        () => {
+                                            const modals = document.querySelectorAll('.modal, [role="dialog"], .overlay, [class*="modal"]');
+                                            return Array.from(modals).map(m => ({
+                                                visible: m.offsetParent !== null,
+                                                text: (m.innerText || m.textContent || '').substring(0, 200)
+                                            })).filter(m => m.visible);
+                                        }
+                                    """)
+                                    if modal_check:
+                                        print(f">>> [DEBUG] Found visible modals/overlays: {modal_check}")
+                                        
+                                except Exception as debug_error:
+                                    print(f">>> [DEBUG] Failed to dump page source: {debug_error}")
+                                
                                 # Clean up temp files before raising error
                                 for temp_file in temp_files:
                                     try:
