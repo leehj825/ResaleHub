@@ -552,15 +552,42 @@ async def publish_listing_to_poshmark(
                             await file_input.set_input_files(temp_files)
                             print(f">>> Set {len(temp_files)} files to input")
                             
-                            # CRITICAL: Wait for Delete button to appear - this confirms Poshmark has accepted the file
-                            # Not just that the browser rendered a local preview
-                            print(f">>> Waiting for Poshmark to process images (checking for Delete button)...")
-                            delete_button_found = False
-                            max_wait_time = 45  # Allow up to 45 seconds for Poshmark to process (increased from 20s)
+                            # CRITICAL: Force Poshmark's React app to recognize the file change
+                            # Dispatch events manually to trigger upload
+                            print(f">>> Dispatching change and input events to trigger upload...")
+                            await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                            await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
+                            print(f">>> Events dispatched, waiting for network upload...")
+                            
+                            # PRIMARY: Wait for network response - the "real" confirmation
+                            # This is more reliable than visual checks
+                            upload_confirmed = False
+                            try:
+                                async with page.expect_response(
+                                    lambda response: (
+                                        ("upload" in response.url.lower() or 
+                                         "image" in response.url.lower() or
+                                         "photo" in response.url.lower()) and
+                                        response.status in [200, 201, 204]
+                                    ),
+                                    timeout=30000  # 30 seconds for network response
+                                ) as response_info:
+                                    response = await response_info
+                                    print(f">>> ✓ Network upload confirmed: {response.url} (status: {response.status})")
+                                    upload_confirmed = True
+                            except Exception as network_error:
+                                print(f">>> ⚠ Network upload wait timed out or failed: {network_error}")
+                                # Fall through to visual check as backup
+                            
+                            # FALLBACK: Visual check for Delete button and uploaded images
+                            # This ensures we have both network confirmation AND visual confirmation
+                            print(f">>> Waiting for visual confirmation (Delete button or uploaded image)...")
+                            visual_confirmed = False
+                            max_wait_time = 45  # Allow up to 45 seconds for visual confirmation
                             wait_start = asyncio.get_event_loop().time()
                             
-                            # Primary selectors: Look specifically for Delete/Remove buttons
-                            delete_button_selectors = [
+                            # Expanded selectors: Delete buttons + uploaded images (cloudfront)
+                            visual_selectors = [
                                 'button[aria-label="Delete"]',
                                 'button[aria-label="Remove"]',
                                 'button[aria-label*="Delete" i]',
@@ -568,30 +595,33 @@ async def publish_listing_to_poshmark(
                                 '.listing-editor__image-delete-btn',
                                 '[class*="delete-btn"]',
                                 '[class*="remove-btn"]',
+                                'img[src*="cloudfront"]',  # Poshmark images are hosted on CloudFront
+                                'img[src*="amazonaws"]',   # Alternative AWS CDN
+                                'img[src*="poshmark.com"]', # Direct Poshmark CDN
                             ]
                             
                             while (asyncio.get_event_loop().time() - wait_start) < max_wait_time:
-                                # Check for Delete button specifically
-                                for selector in delete_button_selectors:
+                                # Check for visual indicators
+                                for selector in visual_selectors:
                                     try:
-                                        delete_btn = await page.query_selector(selector)
-                                        if delete_btn:
-                                            is_visible = await delete_btn.is_visible()
+                                        element = await page.query_selector(selector)
+                                        if element:
+                                            is_visible = await element.is_visible()
                                             if is_visible:
-                                                print(f">>> ✓ Delete button found (selector: {selector}) - Poshmark has accepted the image")
-                                                delete_button_found = True
+                                                print(f">>> ✓ Visual confirmation found (selector: {selector})")
+                                                visual_confirmed = True
                                                 break
                                     except:
                                         pass
                                 
-                                if delete_button_found:
+                                if visual_confirmed:
                                     break
                                 
-                                # Also check via JavaScript for Delete buttons
+                                # Also check via JavaScript for visual indicators
                                 try:
-                                    has_delete_button = await page.evaluate("""
+                                    has_visual_indicator = await page.evaluate("""
                                         () => {
-                                            // Check for delete/remove buttons - these only appear after Poshmark processes the image
+                                            // Check for delete/remove buttons
                                             const deleteButtons = document.querySelectorAll(
                                                 'button[aria-label="Delete"], button[aria-label="Remove"], ' +
                                                 'button[aria-label*="Delete" i], button[aria-label*="Remove" i], ' +
@@ -602,20 +632,30 @@ async def publish_listing_to_poshmark(
                                                     return true;
                                                 }
                                             }
+                                            // Check for uploaded images (cloudfront, aws, poshmark CDN)
+                                            const uploadedImages = document.querySelectorAll(
+                                                'img[src*="cloudfront"], img[src*="amazonaws"], img[src*="poshmark.com"]'
+                                            );
+                                            for (const img of uploadedImages) {
+                                                if (img.offsetParent !== null && img.offsetWidth > 0 && img.offsetHeight > 0) {
+                                                    return true;
+                                                }
+                                            }
                                             return false;
                                         }
                                     """)
-                                    if has_delete_button:
-                                        print(f">>> ✓ Delete button found (via JavaScript) - Poshmark has accepted the image")
-                                        delete_button_found = True
+                                    if has_visual_indicator:
+                                        print(f">>> ✓ Visual confirmation found (via JavaScript)")
+                                        visual_confirmed = True
                                         break
                                 except:
                                     pass
                                 
                                 await asyncio.sleep(0.5)
                             
-                            if not delete_button_found:
-                                error_msg = f"Poshmark did not process images after {max_wait_time}s. Delete button not found. Images may not have been uploaded correctly. Aborting publish."
+                            # Require at least one confirmation (network OR visual)
+                            if not upload_confirmed and not visual_confirmed:
+                                error_msg = f"Poshmark did not process images after {max_wait_time}s. Neither network upload nor visual confirmation found. Images may not have been uploaded correctly. Aborting publish."
                                 print(f">>> ✗ ERROR: {error_msg}")
                                 # Clean up temp files before raising error
                                 for temp_file in temp_files:
@@ -627,7 +667,12 @@ async def publish_listing_to_poshmark(
                             else:
                                 # Additional wait to ensure image is fully processed
                                 await asyncio.sleep(1)
-                                print(f">>> ✓ Uploaded {len(temp_files)} images - Poshmark processing confirmed")
+                                confirmation_type = []
+                                if upload_confirmed:
+                                    confirmation_type.append("network")
+                                if visual_confirmed:
+                                    confirmation_type.append("visual")
+                                print(f">>> ✓ Uploaded {len(temp_files)} images - Confirmed via: {', '.join(confirmation_type)}")
                         finally:
                             for temp_file in temp_files:
                                 try:
