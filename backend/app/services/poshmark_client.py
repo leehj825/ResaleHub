@@ -2258,26 +2258,19 @@ async def publish_listing(
             
             page = await context.new_page()
             
-            # 3. 리소스 차단 DISABLED during publish (CRITICAL FIX)
+            # CRITICAL: NO resource blocking during publish
             # Poshmark's image uploader requires full network access to send image blobs
-            # and receive CloudFront URLs. Blocking resources breaks the upload process.
+            # and receive CloudFront URLs. Any route blocking breaks the upload process.
             # 
-            # DISABLED: Resource blocking removed to allow image uploads
-            # async def selective_block_publish(route):
-            #     resource_type = route.request.resource_type
-            #     url = route.request.url.lower()
-            #     
-            #     # 이미지, 폰트, 미디어는 차단
-            #     if resource_type in ["image", "font", "media"]:
-            #         await route.abort()
-            #     # 광고/추적 스크립트만 차단 (필수 스크립트는 허용)
-            #     elif resource_type == "script" and any(domain in url for domain in ["google-analytics", "googletagmanager", "facebook", "doubleclick", "adservice"]):
-            #         await route.abort()
-            #     else:
-            #         await route.continue_()
+            # REMOVED: All page.route() calls deleted to ensure uploads work.
+            # It's better to load a few ads and succeed than to block ads and fail the upload.
             # 
-            # await page.route("**/*", selective_block_publish)
-            log("Resource blocking DISABLED for image upload compatibility", emit_to_frontend=False)
+            # Explicitly unroute any existing routes to ensure clean state
+            try:
+                await page.unroute("**/*")
+            except:
+                pass  # No routes to unroute is fine
+            log("Resource blocking completely removed - full network access enabled", emit_to_frontend=False)
             
             try:
                 # 4. 로그인 상태 확인
