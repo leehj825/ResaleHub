@@ -419,6 +419,14 @@ async def publish_listing_to_poshmark(
     page.on("response", response_handler)
     print(f">>> [DEBUG] Browser listeners attached")
     
+    # CRITICAL: Ensure NO route blocking is active on this page
+    # Routes can interfere with image uploads to CloudFront/S3
+    try:
+        await page.unroute("**/*")
+    except:
+        pass  # No routes to unroute is fine
+    print(f">>> [DEBUG] Verified no route blocking on page")
+    
     try:
         # Navigate directly to the correct URL (no guessing)
         listing_url = "https://poshmark.com/create-listing"
@@ -625,18 +633,19 @@ async def publish_listing_to_poshmark(
                             if not quick_visual_check:
                                 print(f">>> Standard upload failed to show visual confirmation. Attempting Drag & Drop fallback...")
                                 
-                                # Find drop zone with specific Poshmark selectors
+                                # Find drop zone using PDF-verified exact text: "DROP PHOTOS & VIDEOS HERE TO UPLOAD"
                                 drop_zone_selectors = [
-                                    '.listing-editor__image-upload-container',
-                                    '.drag-drop-box',
-                                    'div[class*="upload-container"]',
-                                    'div[class*="drag-drop"]',
-                                    'div[class*="dropzone"]',
-                                    'div[class*="drop-zone"]',
-                                    'div:has-text("drag them in")',
-                                    'div:has-text("drag and drop")',
-                                    '[data-testid*="upload"]',
-                                    '[data-testid*="drop"]',
+                                    'div:has-text("DROP PHOTOS & VIDEOS HERE TO UPLOAD")',  # PDF-verified exact text
+                                    'div:has-text("DROP PHOTOS")',                          # Partial match fallback
+                                    '.listing-editor__image-upload-container',               # Primary Poshmark selector
+                                    '[data-test="image-upload-container"]',                 # Data attribute selector
+                                    '.drag-drop-box',                                        # Alternative class
+                                    'div[class*="upload-container"]',                       # Partial class match
+                                    'div[class*="drag-drop"]',                              # Partial class match
+                                    'div[class*="dropzone"]',                               # Partial class match
+                                    'div[class*="drop-zone"]',                              # Partial class match
+                                    'form',                                                  # Form element (often accepts drops)
+                                    'body',                                                  # Last resort - body element
                                 ]
                                 
                                 drop_zone_found = None
@@ -972,17 +981,100 @@ async def publish_listing_to_poshmark(
         
         price_filled = False
         
-        # First, try direct ID/name selectors for listing price (most reliable)
-        print(f">>> Searching for listing price field (Listing Price, not Original Price)...")
-        direct_price_selectors = [
-            'input#price',
-            'input[name="price"]',
-            'input[id="price"]',
-            'input[data-vv-name="price"]',
-            'input[data-vv-name="list_price"]',
-            'input[data-vv-name="selling_price"]',
-            'input[data-vv-name="current_price"]',
-        ]
+        # PDF-VERIFIED: First, try to find input using "Listing Price" text label (most reliable)
+        print(f">>> Searching for listing price field using 'Listing Price' text (PDF-verified)...")
+        try:
+            # Use JavaScript to find the input associated with "Listing Price" text
+            price_field_selector = await page.evaluate("""
+                () => {
+                    // Find element containing "Listing Price" text
+                    const allElements = Array.from(document.querySelectorAll('*'));
+                    let listingPriceElement = null;
+                    
+                    for (const el of allElements) {
+                        const text = (el.textContent || el.innerText || '').trim();
+                        if (text === 'Listing Price' || text.includes('Listing Price')) {
+                            listingPriceElement = el;
+                            break;
+                        }
+                    }
+                    
+                    if (!listingPriceElement) {
+                        return null;
+                    }
+                    
+                    // Find input in the same parent container or nearby
+                    let parent = listingPriceElement.parentElement;
+                    let attempts = 0;
+                    while (parent && attempts < 5) {
+                        // Look for input in this parent
+                        const input = parent.querySelector('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]');
+                        if (input) {
+                            // Verify it's not original price
+                            const dataVvName = (input.getAttribute('data-vv-name') || '').toLowerCase();
+                            const name = (input.name || '').toLowerCase();
+                            const id = (input.id || '').toLowerCase();
+                            if (!dataVvName.includes('original') && !name.includes('original') && !id.includes('original')) {
+                                // Generate a unique selector for this input
+                                if (input.id) {
+                                    return `input#${input.id}`;
+                                } else if (input.getAttribute('data-vv-name')) {
+                                    return `input[data-vv-name="${input.getAttribute('data-vv-name')}"]`;
+                                } else if (input.name) {
+                                    return `input[name="${input.name}"]`;
+                                } else {
+                                    // Use nth-of-type as fallback
+                                    const inputs = Array.from(parent.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"]'));
+                                    const index = inputs.indexOf(input);
+                                    return `input[type="${input.type}"]:nth-of-type(${index + 1})`;
+                                }
+                            }
+                        }
+                        parent = parent.parentElement;
+                        attempts++;
+                    }
+                    return null;
+                }
+            """)
+            
+            if price_field_selector:
+                print(f">>> Found price field selector via 'Listing Price' text: {price_field_selector}")
+                try:
+                    price_field = await page.wait_for_selector(price_field_selector, timeout=3000, state="visible")
+                    if price_field:
+                        is_visible = await price_field.is_visible()
+                        is_enabled = await price_field.is_enabled()
+                        if is_visible and is_enabled:
+                            await price_field.click(force=True)
+                            await asyncio.sleep(0.2)
+                            await price_field.fill("")
+                            await asyncio.sleep(0.1)
+                            await price_field.type(price, delay=50)
+                            await asyncio.sleep(0.2)
+                            await page.keyboard.press('Tab')
+                            await asyncio.sleep(0.2)
+                            
+                            filled_value = await price_field.input_value()
+                            if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                print(f">>> ✓ Filled listing price using 'Listing Price' text label, value: {filled_value}")
+                                price_filled = True
+                except Exception as e:
+                    print(f">>> Failed to fill price via 'Listing Price' label selector: {e}")
+        except Exception as e:
+            print(f">>> Could not find price via 'Listing Price' text: {e}")
+        
+        # Fallback: try direct ID/name selectors for listing price
+        if not price_filled:
+            print(f">>> Trying direct selectors for listing price field...")
+            direct_price_selectors = [
+                'input#price',
+                'input[name="price"]',
+                'input[id="price"]',
+                'input[data-vv-name="price"]',
+                'input[data-vv-name="list_price"]',
+                'input[data-vv-name="selling_price"]',
+                'input[data-vv-name="current_price"]',
+            ]
         
         for selector in direct_price_selectors:
             try:
@@ -1312,64 +1404,59 @@ async def publish_listing_to_poshmark(
         except Exception as e:
             print(f">>> Warning: Could not close modals: {e}")
         
-        # 4. 발행 버튼 클릭
-        print(f">>> Looking for publish button...")
+        # 4. PDF-VERIFIED 2-STEP PUBLISH: Click "Next" -> Wait for modal -> Click "List"
+        print(f">>> Looking for 'Next' button (PDF-verified 2-step flow)...")
         
-        publish_btn = None
-        publish_selectors = [
-            'button:has-text("List")',
-            'button:has-text("List Item")',
+        next_btn = None
+        next_selectors = [
             'button:has-text("Next")',
-            'button:has-text("Publish")',
-            'button[type="submit"]',
-            'button[data-testid*="submit"]',
-            'button[data-testid*="publish"]',
+            'button[type="submit"]:has-text("Next")',
+            'button[data-testid*="next"]',
         ]
         
-        for selector in publish_selectors:
+        for selector in next_selectors:
             try:
-                publish_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
-                if publish_btn:
-                    print(f">>> ✓ Found publish button with selector: {selector}")
+                next_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                if next_btn:
+                    print(f">>> ✓ Found 'Next' button with selector: {selector}")
                     break
             except:
                 continue
         
-        if not publish_btn:
-            # Try to find any button with "List" or "Publish" text
+        if not next_btn:
+            # Try to find any button with "Next" text
             try:
                 buttons = await page.query_selector_all('button')
                 for btn in buttons:
                     text = await btn.inner_text()
-                    if text and ("List" in text or "Publish" in text or "Next" in text):
-                        publish_btn = btn
-                        print(f">>> ✓ Found publish button by text: {text}")
+                    if text and "Next" in text:
+                        next_btn = btn
+                        print(f">>> ✓ Found 'Next' button by text: {text}")
                         break
             except:
                 pass
         
-        if not publish_btn:
-            await page.screenshot(path="/tmp/no_publish_btn.png")
-            raise PoshmarkPublishError("Publish button not found")
-
+        if not next_btn:
+            await page.screenshot(path="/tmp/no_next_btn.png")
+            raise PoshmarkPublishError("'Next' button not found (PDF-verified workflow requires this)")
+        
         # Wait for any modals to close before clicking
         try:
-            # Wait for modal backdrop to disappear
             await page.wait_for_selector('.modal-backdrop--in', state="hidden", timeout=3000)
             print(f">>> Modal backdrop closed")
         except:
-            # Modal might not be there or already closed
             pass
         
-        # Handle modals before clicking publish button
+        # Handle modals before clicking Next button
         await handle_modals(page)
         
-        # Try clicking the button with force=True and retry logic
+        # STEP 1: Click "Next" button
+        print(f">>> Clicking 'Next' button (Step 1 of 2-step publish)...")
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                await publish_btn.click(timeout=5000, force=True)
-                print(">>> Clicked publish button")
+                await next_btn.click(timeout=5000, force=True)
+                print(">>> Clicked 'Next' button")
                 break
             except Exception as click_error:
                 if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
@@ -1381,27 +1468,132 @@ async def publish_listing_to_poshmark(
                     else:
                         print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
                         await handle_modals(page)
-                        await publish_btn.evaluate("button => button.click()")
-                        print(">>> Clicked publish button via JavaScript")
+                        await next_btn.evaluate("button => button.click()")
+                        print(">>> Clicked 'Next' button via JavaScript")
                         break
                 else:
                     raise
         
-        # Wait for navigation or next step
+        # STEP 2: Wait for "Share" modal to appear
+        print(f">>> Waiting for 'Share' modal to appear (Step 2 of 2-step publish)...")
+        await asyncio.sleep(2)  # Give modal time to appear
+        
+        share_modal = None
+        modal_selectors = [
+            '.modal:has-text("Share")',
+            '.share-modal',
+            '[role="dialog"]:has-text("Share")',
+            '.modal:has-text("Share Listing")',
+        ]
+        
+        for selector in modal_selectors:
+            try:
+                share_modal = await page.wait_for_selector(selector, timeout=5000, state="visible")
+                if share_modal:
+                    print(f">>> ✓ Found 'Share' modal with selector: {selector}")
+                    break
+            except:
+                continue
+        
+        if not share_modal:
+            # Fallback: Check if any modal is visible with "Share" text
+            try:
+                modals = await page.query_selector_all('.modal, [role="dialog"]')
+                for modal in modals:
+                    text = await modal.inner_text()
+                    if text and ("Share" in text or "Share Listing" in text):
+                        is_visible = await modal.is_visible()
+                        if is_visible:
+                            share_modal = modal
+                            print(f">>> ✓ Found 'Share' modal by text content")
+                            break
+            except:
+                pass
+        
+        if not share_modal:
+            print(f">>> Warning: 'Share' modal not found, but continuing to look for 'List' button...")
+        
+        # STEP 3: Find and click "List" button inside the modal
+        print(f">>> Looking for 'List' button inside modal...")
+        list_btn = None
+        list_selectors = [
+            'button:has-text("List")',
+            'button:has-text("List This Item")',
+            'button:has-text("List Item")',
+            'button[type="submit"]:has-text("List")',
+        ]
+        
+        # If modal found, search within it; otherwise search entire page
+        search_scope = share_modal if share_modal else page
+        
+        for selector in list_selectors:
+            try:
+                if share_modal:
+                    # Search within modal
+                    list_btn = await share_modal.query_selector(selector)
+                else:
+                    # Search entire page
+                    list_btn = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                
+                if list_btn:
+                    is_visible = await list_btn.is_visible()
+                    if is_visible:
+                        print(f">>> ✓ Found 'List' button with selector: {selector}")
+                        break
+            except:
+                continue
+        
+        if not list_btn:
+            # Try to find any button with "List" text
+            try:
+                buttons = await page.query_selector_all('button')
+                for btn in buttons:
+                    text = await btn.inner_text()
+                    if text and ("List" in text or "List This Item" in text):
+                        is_visible = await btn.is_visible()
+                        if is_visible:
+                            list_btn = btn
+                            print(f">>> ✓ Found 'List' button by text: {text}")
+                            break
+            except:
+                pass
+        
+        if not list_btn:
+            await page.screenshot(path="/tmp/no_list_btn.png")
+            raise PoshmarkPublishError("'List' button not found in Share modal (PDF-verified workflow requires this)")
+        
+        # Click "List" button
+        print(f">>> Clicking 'List' button (final step)...")
+        for attempt in range(max_retries):
+            try:
+                await list_btn.click(timeout=5000, force=True)
+                print(">>> Clicked 'List' button")
+                break
+            except Exception as click_error:
+                if "intercepts pointer events" in str(click_error) or "modal" in str(click_error).lower():
+                    if attempt < max_retries - 1:
+                        print(f">>> Modal intercepted click (attempt {attempt + 1}/{max_retries}), handling modals and retrying...")
+                        await handle_modals(page)
+                        await asyncio.sleep(0.5)
+                        continue
+                    else:
+                        print(f">>> Modal still blocking after {max_retries} attempts, using JavaScript click...")
+                        await handle_modals(page)
+                        await list_btn.evaluate("button => button.click()")
+                        print(">>> Clicked 'List' button via JavaScript")
+                        break
+                else:
+                    raise
+        
+        # Wait for navigation or completion
         try:
             await page.wait_for_load_state("networkidle", timeout=10000)
         except:
             pass
 
-        # If we clicked "Next", we might be on a price/shipping step - fill price if needed
+        # If we clicked "Next" earlier and are now on a price/shipping step, fill price if needed
         current_url = page.url
-        button_text = ""
-        try:
-            button_text = await publish_btn.inner_text()
-        except:
-            pass
-        
-        if "next" in button_text.lower():
+        if "next" in (await next_btn.inner_text() if next_btn else "").lower():
             print(f">>> Clicked 'Next', checking for price field on next step...")
             await asyncio.sleep(3)  # Wait longer for next step to load
             
@@ -2265,12 +2457,14 @@ async def publish_listing(
             # REMOVED: All page.route() calls deleted to ensure uploads work.
             # It's better to load a few ads and succeed than to block ads and fail the upload.
             # 
-            # Explicitly unroute any existing routes to ensure clean state
+            # CRITICAL: Explicitly unroute ALL routes to ensure zero network blocking
+            # Routes can persist or be set elsewhere, so we must clear them completely
+            # Note: unroute() removes routes, and we call it even if none exist (safe)
             try:
                 await page.unroute("**/*")
             except:
-                pass  # No routes to unroute is fine
-            log("Resource blocking completely removed - full network access enabled", emit_to_frontend=False)
+                pass  # No routes to unroute is fine - this is expected
+            log("Resource blocking completely removed - full network access enabled (verified)", emit_to_frontend=False)
             
             try:
                 # 4. 로그인 상태 확인
