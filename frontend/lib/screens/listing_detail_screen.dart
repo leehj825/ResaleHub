@@ -38,12 +38,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
   final List<String> _statusOptions = const ['draft', 'listed', 'sold'];
 
-  @override
-  void initState() {
-    super.initState();
-    _listing = widget.listing;
-    _loadImages();
-  }
 
   Future<void> _loadImages() async {
     setState(() {
@@ -213,22 +207,33 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   String? _publishJobId;
-  List<Map<String, dynamic>> _publishProgressMessages = [];
+  late final ValueNotifier<List<Map<String, dynamic>>> _publishProgressMessagesNotifier;
   Timer? _progressTimer;
   bool _progressDialogOpen = false;
 
   @override
+  void initState() {
+    super.initState();
+    _listing = widget.listing;
+    _loadImages();
+    _publishProgressMessagesNotifier = ValueNotifier<List<Map<String, dynamic>>>([]);
+  }
+
+  @override
   void dispose() {
     _progressTimer?.cancel();
+    _publishProgressMessagesNotifier.dispose();
     super.dispose();
   }
 
   Future<void> _publishToPoshmark() async {
     setState(() {
       _publishing = true;
-      _publishProgressMessages = [];
       _publishJobId = null;
     });
+    
+    // Reset progress messages
+    _publishProgressMessagesNotifier.value = [];
 
     // Show progress dialog
     _showProgressDialog();
@@ -254,16 +259,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
           final status = progress['status'] as String;
           final messages = progress['messages'] as List<dynamic>;
 
-          setState(() {
-            _publishProgressMessages = messages.map((m) => m as Map<String, dynamic>).toList();
-          });
-          
-          // Update dialog by closing and reopening with new messages
-          if (mounted && _progressDialogOpen && Navigator.of(context).canPop()) {
-            Navigator.of(context).pop();
-            _progressDialogOpen = false;
-            _showProgressDialog();
-          }
+          // Update dialog content in-place using ValueNotifier (no blinking!)
+          _publishProgressMessagesNotifier.value = messages.map((m) => m as Map<String, dynamic>).toList();
 
           if (status == 'completed' || status == 'failed') {
             timer.cancel();
@@ -313,7 +310,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       context: context,
       barrierDismissible: false,
       builder: (context) => _ProgressDialogWidget(
-        progressMessages: _publishProgressMessages,
+        progressMessagesNotifier: _publishProgressMessagesNotifier,
         onCancel: () {
           _progressTimer?.cancel();
           _progressDialogOpen = false;
@@ -322,8 +319,6 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         },
       ),
     );
-    
-    // Note: Dialog will be updated when setState is called with new progress messages
   }
 
   Widget _buildDetailRow(String label, String value, {bool copyable = false}) {
@@ -666,11 +661,11 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 }
 
 class _ProgressDialogWidget extends StatelessWidget {
-  final List<Map<String, dynamic>> progressMessages;
+  final ValueNotifier<List<Map<String, dynamic>>> progressMessagesNotifier;
   final VoidCallback onCancel;
 
   const _ProgressDialogWidget({
-    required this.progressMessages,
+    required this.progressMessagesNotifier,
     required this.onCancel,
   });
 
@@ -696,59 +691,66 @@ class _ProgressDialogWidget extends StatelessWidget {
       ),
       content: SizedBox(
         width: double.maxFinite,
-        child: progressMessages.isEmpty
-            ? const Text('Starting publish...')
-            : ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 400),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: progressMessages.length,
-                  itemBuilder: (context, index) {
-                    final msg = progressMessages[index];
-                    final message = msg['message'] as String? ?? '';
-                    final level = msg['level'] as String? ?? 'info';
+        child: ValueListenableBuilder<List<Map<String, dynamic>>>(
+          valueListenable: progressMessagesNotifier,
+          builder: (context, progressMessages, _) {
+            if (progressMessages.isEmpty) {
+              return const Text('Starting publish...');
+            }
+            
+            return ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 400),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: progressMessages.length,
+                itemBuilder: (context, index) {
+                  final msg = progressMessages[index];
+                  final message = msg['message'] as String? ?? '';
+                  final level = msg['level'] as String? ?? 'info';
 
-                    Color color;
-                    IconData icon;
-                    switch (level) {
-                      case 'success':
-                        color = Colors.green;
-                        icon = Icons.check_circle;
-                        break;
-                      case 'error':
-                        color = Colors.red;
-                        icon = Icons.error;
-                        break;
-                      case 'warning':
-                        color = Colors.orange;
-                        icon = Icons.warning;
-                        break;
-                      default:
-                        color = Colors.blue;
-                        icon = Icons.info;
-                    }
+                  Color color;
+                  IconData icon;
+                  switch (level) {
+                    case 'success':
+                      color = Colors.green;
+                      icon = Icons.check_circle;
+                      break;
+                    case 'error':
+                      color = Colors.red;
+                      icon = Icons.error;
+                      break;
+                    case 'warning':
+                      color = Colors.orange;
+                      icon = Icons.warning;
+                      break;
+                    default:
+                      color = Colors.blue;
+                      icon = Icons.info;
+                  }
 
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(icon, size: 16, color: color),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              message,
-                              style: TextStyle(fontSize: 13, color: color),
-                              softWrap: true,
-                              overflow: TextOverflow.visible,
-                            ),
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(icon, size: 16, color: color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            message,
+                            style: TextStyle(fontSize: 13, color: color),
+                            softWrap: true,
+                            overflow: TextOverflow.visible,
                           ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
+            );
+          },
+        ),
       ),
       actions: [
         TextButton(
