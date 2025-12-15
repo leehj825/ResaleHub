@@ -2525,30 +2525,8 @@ async def get_poshmark_inventory(
                     else:
                         print(f">>> DEBUG: First cookie '{first_cookie.get('name')}' has no sameSite field")
                 
-                # Navigate to domain first before adding cookies (required by Playwright)
-                page_temp = await context.new_page()
-                try:
-                    print(f">>> [POSHMARK] Navigating to https://poshmark.com (for cookie setup)...", flush=True)
-                    sys.stdout.flush()
-                    import asyncio
-                    try:
-                        await asyncio.wait_for(
-                            page_temp.goto("https://poshmark.com", wait_until="domcontentloaded", timeout=10000),
-                            timeout=15.0  # 15 second overall timeout
-                        )
-                        print(f">>> [POSHMARK] ✓ Successfully navigated to https://poshmark.com", flush=True)
-                        sys.stdout.flush()
-                    except asyncio.TimeoutError:
-                        print(f">>> [POSHMARK] ⚠ Warning: Navigation to poshmark.com timed out (continuing anyway)", flush=True)
-                        sys.stdout.flush()
-                except Exception as e:
-                    print(f">>> [POSHMARK] ⚠ Warning: Navigation to poshmark.com failed: {e}", flush=True)
-                    sys.stdout.flush()
-                    pass  # Continue even if navigation fails
-                finally:
-                    await page_temp.close()
-                
-                # Add cookies to context
+                # OPTIMIZATION: Add cookies directly - no dummy page navigation needed
+                # Playwright's add_cookies works fine as long as cookies have correct domain
                 await context.add_cookies(playwright_cookies)
                 print(f">>> Loaded {len(playwright_cookies)} valid cookies into browser context")
                 
@@ -2585,193 +2563,161 @@ async def get_poshmark_inventory(
             log("Resource blocking configured", emit_to_frontend=False)
             
             try:
-                # 로그인 상태 확인 - 최적화: 직접 closet 페이지로 이동하여 확인
-                log("Navigating to feed page to check login status...", emit_to_frontend=False)
-                print(f">>> [POSHMARK] Navigating to https://poshmark.com/feed...", flush=True)
-                sys.stdout.flush()
-                
-                # Add timeout protection with asyncio.wait_for
-                try:
-                    import asyncio
-                    await asyncio.wait_for(
-                        page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=15000),
-                        timeout=20.0  # 20 second overall timeout
-                    )
-                    print(f">>> [POSHMARK] ✓ Successfully navigated to https://poshmark.com/feed", flush=True)
-                    print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
-                    sys.stdout.flush()
-                    log(f"Feed page loaded: {page.url}", emit_to_frontend=False)
-                except asyncio.TimeoutError:
-                    print(f">>> [POSHMARK] ERROR: Navigation to feed page timed out after 20 seconds", flush=True)
-                    sys.stdout.flush()
-                    raise PoshmarkPublishError("Navigation to Poshmark feed page timed out. The site may be slow or unreachable.")
-                
-                # 빠른 로그인 확인 - wait_for_selector 사용 (최대 3초 대기)
-                log("Checking login status...", emit_to_frontend=False)
-                is_logged_in = False
+                # OPTIMIZATION: Direct-to-Closet strategy - skip unnecessary navigations
+                # Check if username is valid first
                 actual_username = username
-                page_url = page.url.lower()
+                username_valid = (username and 
+                                 username != "Connected Account" and 
+                                 username.strip() and 
+                                 len(username.strip()) > 0)
                 
-                # Method 1: URL 체크 (가장 빠름)
-                if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
-                    log("✗ URL indicates login page - not authenticated", emit_to_frontend=False)
-                    is_logged_in = False
-                else:
-                    # Method 2: closet 링크 찾기 (가장 신뢰할 수 있고 username도 함께 추출)
+                if username_valid:
+                    # DIRECT PATH: Navigate straight to closet page
+                    log(f"Username is valid, navigating directly to closet: {actual_username}", emit_to_frontend=False)
+                    closet_url = f"https://poshmark.com/closet/{actual_username}"
+                    print(f">>> [POSHMARK] Navigating directly to closet: {closet_url}", flush=True)
+                    sys.stdout.flush()
+                    
                     try:
-                        closet_link = await page.wait_for_selector(
-                            'a[href*="/closet/"]',
-                            timeout=3000,
-                            state="attached"
+                        import asyncio
+                        await asyncio.wait_for(
+                            page.goto(closet_url, wait_until="domcontentloaded", timeout=15000),
+                            timeout=25.0  # 25 second overall timeout
                         )
-                        if closet_link:
-                            href = await closet_link.get_attribute("href")
-                            if href:
-                                import re
-                                match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
-                                if match:
-                                    extracted = match.group(1)
-                                    if extracted and extracted != "Connected Account":
-                                        actual_username = extracted
-                                        is_logged_in = True
-                                        log(f"✓ Found closet link, extracted username: {actual_username}", emit_to_frontend=False)
-                    except:
-                        # closet 링크를 찾지 못했으면 다른 방법 시도
+                        print(f">>> [POSHMARK] ✓ Successfully navigated to closet page", flush=True)
+                        print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
+                        sys.stdout.flush()
+                        
+                        # Login verification: Check if redirected to /login
+                        page_url = page.url.lower()
+                        if "login" in page_url or "sign-in" in page_url or "signin" in page_url:
+                            log("✗ Redirected to login page - authentication failed", level="error")
+                            screenshot_base64 = None
+                            try:
+                                screenshot_bytes = await page.screenshot(full_page=True)
+                                import base64
+                                screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                            except Exception:
+                                pass
+                            raise PoshmarkAuthError(
+                                "Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.",
+                                screenshot_base64=screenshot_base64
+                            )
+                        
+                        # If we're still on the closet page, authentication is successful
+                        if f"/closet/{actual_username}" in page_url or f"/closet/{actual_username.lower()}" in page_url:
+                            log("✓ Cookie authentication successful (verified via direct closet navigation)", level="info")
+                        else:
+                            log(f"⚠ Warning: Expected closet page but got: {page.url}", emit_to_frontend=False)
+                        
+                    except asyncio.TimeoutError:
+                        print(f">>> [POSHMARK] ERROR: Navigation to closet page timed out after 25 seconds", flush=True)
+                        sys.stdout.flush()
+                        raise PoshmarkPublishError(f"Navigation to closet page timed out. URL: {closet_url}")
+                    except PlaywrightTimeoutError:
+                        log("⚠ Warning: Page load timeout, but continuing with extraction...", emit_to_frontend=False)
+                else:
+                    # FALLBACK PATH: Username unknown, need to extract from /feed page
+                    log("Username not available, navigating to /feed to extract username...", emit_to_frontend=False)
+                    print(f">>> [POSHMARK] Navigating to https://poshmark.com/feed to extract username...", flush=True)
+                    sys.stdout.flush()
+                    
+                    try:
+                        import asyncio
+                        await asyncio.wait_for(
+                            page.goto("https://poshmark.com/feed", wait_until="domcontentloaded", timeout=15000),
+                            timeout=20.0  # 20 second overall timeout
+                        )
+                        print(f">>> [POSHMARK] ✓ Successfully navigated to feed page", flush=True)
+                        sys.stdout.flush()
+                        
+                        # Extract username from feed page
+                        page_url = page.url.lower()
+                        if "login" in page_url or "sign-in" in page_url:
+                            log("✗ Redirected to login page - authentication failed", level="error")
+                            raise PoshmarkAuthError("Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.")
+                        
+                        # Try to extract username from closet link
                         try:
-                            user_link = await page.wait_for_selector(
-                                'a[href*="/user/"], nav a[href*="/user/"]',
-                                timeout=2000,
+                            closet_link = await page.wait_for_selector(
+                                'a[href*="/closet/"]',
+                                timeout=3000,
                                 state="attached"
                             )
-                            if user_link:
-                                href = await user_link.get_attribute("href")
+                            if closet_link:
+                                href = await closet_link.get_attribute("href")
                                 if href:
                                     import re
-                                    match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                                    match = re.search(r"/closet/([A-Za-z0-9_\-]+)", href)
                                     if match:
                                         extracted = match.group(1)
                                         if extracted and extracted != "Connected Account":
                                             actual_username = extracted
-                                            is_logged_in = True
-                                            log(f"✓ Found user link, extracted username: {actual_username}", emit_to_frontend=False)
+                                            log(f"✓ Extracted username from feed page: {actual_username}", emit_to_frontend=False)
                         except:
-                            # 빠른 텍스트 체크
+                            # Try user link as fallback
                             try:
-                                page_content = await page.content()
-                                if any(indicator in page_content for indicator in ["Sign Out", "Log Out", "My Closet"]):
-                                    is_logged_in = True
-                                    log("✓ Found logged-in indicators in page content", emit_to_frontend=False)
+                                user_link = await page.wait_for_selector(
+                                    'a[href*="/user/"], nav a[href*="/user/"]',
+                                    timeout=2000,
+                                    state="attached"
+                                )
+                                if user_link:
+                                    href = await user_link.get_attribute("href")
+                                    if href:
+                                        import re
+                                        match = re.search(r"/user/([A-Za-z0-9_\-]+)", href)
+                                        if match:
+                                            extracted = match.group(1)
+                                            if extracted and extracted != "Connected Account":
+                                                actual_username = extracted
+                                                log(f"✓ Extracted username from user link: {actual_username}", emit_to_frontend=False)
                             except:
                                 pass
-                
-                if is_logged_in:
-                    log("✓ Cookie authentication successful", level="success")
-                else:
-                    log("✗ Cookie authentication failed - no logged-in indicators found", level="error")
-                
-                if not is_logged_in:
-                    # Try to get more details about why login failed
-                    page_url = page.url.lower()
-                    if "login" in page_url or "sign-in" in page_url:
-                        raise PoshmarkAuthError("Cookies are invalid or expired. Please reconnect your Poshmark account using the Chrome Extension.")
-                    else:
-                        # Check if there's a specific error message on the page
-                        try:
-                            error_selectors = [
-                                '.error',
-                                '.error-message',
-                                '[class*="error"]',
-                            ]
-                            for selector in error_selectors:
-                                try:
-                                    error_el = await page.query_selector(selector)
-                                    if error_el:
-                                        error_text = await error_el.inner_text()
-                                        if error_text and len(error_text.strip()) > 0:
-                                            raise PoshmarkAuthError(f"Authentication failed: {error_text.strip()[:100]}")
-                                except PoshmarkAuthError:
-                                    raise
-                                except:
-                                    pass
-                        except PoshmarkAuthError:
-                            raise
-                        except:
-                            pass
                         
-                        # Capture screenshot as base64 for frontend debugging
-                        screenshot_base64 = None
-                        try:
-                            screenshot_bytes = await page.screenshot(full_page=True)
-                            import base64
-                            screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                            print(">>> Screenshot captured for debugging")
-                        except Exception as e:
-                            print(f">>> Failed to capture screenshot: {e}")
+                        if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
+                            # Try extracting from cookies as last resort
+                            for cookie in cookies:
+                                cookie_name = cookie.get('name', '').lower()
+                                if cookie_name in ['un', 'username', 'user_name', 'user']:
+                                    cookie_username = cookie.get('value', '').strip()
+                                    if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
+                                        actual_username = cookie_username
+                                        log(f"✓ Extracted username from cookie: {actual_username}", emit_to_frontend=False)
+                                        break
                         
-                        # Try to get page title for more context
-                        try:
-                            page_title = await page.title()
-                            print(f">>> Page title: {page_title}")
-                        except:
-                            pass
+                        if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
+                            log("✗ ERROR: Could not extract valid username!", level="error")
+                            raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your Poshmark account using the Chrome Extension.")
                         
-                        raise PoshmarkAuthError(
-                            "Unable to verify login status. Please reconnect your Poshmark account using the Chrome Extension.",
-                            screenshot_base64=screenshot_base64
+                        # Now navigate to closet
+                        log(f"Navigating to closet page: {actual_username}", emit_to_frontend=False)
+                        closet_url = f"https://poshmark.com/closet/{actual_username}"
+                        print(f">>> [POSHMARK] Navigating to closet page: {closet_url}", flush=True)
+                        sys.stdout.flush()
+                        
+                        await asyncio.wait_for(
+                            page.goto(closet_url, wait_until="domcontentloaded", timeout=15000),
+                            timeout=25.0
                         )
+                        print(f">>> [POSHMARK] ✓ Successfully navigated to closet page", flush=True)
+                        sys.stdout.flush()
+                        
+                    except asyncio.TimeoutError:
+                        print(f">>> [POSHMARK] ERROR: Navigation timed out", flush=True)
+                        sys.stdout.flush()
+                        raise PoshmarkPublishError("Navigation to Poshmark timed out. The site may be slow or unreachable")
                 
-                # Username이 아직 추출되지 않았으면 저장된 username 사용 (extension에서 보낸 것)
-                if actual_username == username or actual_username == "Connected Account":
-                    # 저장된 username이 유효한지 확인
-                    if username and username != "Connected Account" and username.strip():
-                        actual_username = username
-                        log(f"Using stored username from extension: {actual_username}", emit_to_frontend=False)
-                    else:
-                        # Fallback: 쿠키에서 시도
-                        log("Extracting username from cookies as fallback...", emit_to_frontend=False)
-                        for cookie in cookies:
-                            cookie_name = cookie.get('name', '').lower()
-                            if cookie_name in ['un', 'username', 'user_name', 'user']:
-                                cookie_username = cookie.get('value', '').strip()
-                                if cookie_username and cookie_username != "Connected Account" and len(cookie_username) > 0:
-                                    actual_username = cookie_username
-                                    log(f"✓ Extracted username from cookie '{cookie_name}': {actual_username}", emit_to_frontend=False)
-                                    break
+                # Common: Verify closet page loaded correctly (for both direct and fallback paths)
+                page_url = page.url.lower()
+                log(f"Closet page loaded: {page.url}", emit_to_frontend=False)
                 
-                if actual_username == "Connected Account" or not actual_username or actual_username.strip() == "":
-                    log("✗ ERROR: Could not extract valid username!", level="error")
-                    raise PoshmarkAuthError("Could not determine Poshmark username. Please reconnect your Poshmark account using the Chrome Extension.")
-                
-                log(f"Using username: {actual_username}", emit_to_frontend=False)
-                
-                log(f"Navigating to closet page: {actual_username}", emit_to_frontend=False)
-                closet_url = f"https://poshmark.com/closet/{actual_username}"
-                print(f">>> [POSHMARK] Navigating to closet page: {closet_url}", flush=True)
-                sys.stdout.flush()
+                # 빠른 체크: listing 링크가 있는지 확인 (최대 2초 대기)
                 try:
-                    # Add timeout protection
-                    import asyncio
-                    await asyncio.wait_for(
-                        page.goto(closet_url, wait_until="domcontentloaded", timeout=15000),
-                        timeout=25.0  # 25 second overall timeout
-                    )
-                    print(f">>> [POSHMARK] ✓ Successfully navigated to closet page", flush=True)
-                    print(f">>> [POSHMARK] Current page URL: {page.url}", flush=True)
-                    sys.stdout.flush()
-                    log(f"Closet page loaded: {page.url}", emit_to_frontend=False)
-                    
-                    # 빠른 체크: listing 링크가 있는지 확인 (최대 2초 대기)
-                    try:
-                        await page.wait_for_selector('a[href*="/listing/"]', timeout=2000, state="attached")
-                        log("✓ Found listing links on page", emit_to_frontend=False)
-                    except:
-                        log("⚠ No listing links found immediately, continuing...", emit_to_frontend=False)
-                except asyncio.TimeoutError:
-                    print(f">>> [POSHMARK] ERROR: Navigation to closet page timed out after 25 seconds", flush=True)
-                    sys.stdout.flush()
-                    raise PoshmarkPublishError(f"Navigation to closet page timed out. URL: {closet_url}")
-                except PlaywrightTimeoutError:
-                    log("⚠ Warning: Page load timeout, but continuing with extraction...", emit_to_frontend=False)
+                    await page.wait_for_selector('a[href*="/listing/"]', timeout=2000, state="attached")
+                    log("✓ Found listing links on page", emit_to_frontend=False)
+                except:
+                    log("⚠ No listing links found immediately, continuing...", emit_to_frontend=False)
                 
                 log("Starting item extraction...", emit_to_frontend=True)
                 
