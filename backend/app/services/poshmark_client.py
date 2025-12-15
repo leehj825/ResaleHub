@@ -584,165 +584,68 @@ async def publish_listing_to_poshmark(
                     
                     if temp_files:
                         try:
-                            # PRIMARY METHOD: Use set_input_files
-                            print(f">>> Attempting file upload via set_input_files...")
-                            await file_input.set_input_files(temp_files)
-                            print(f">>> Set {len(temp_files)} files to input")
+                            # PRIMARY METHOD: Click "ADD PHOTOS & VIDEO" button first, then use set_input_files
+                            print(f">>> Looking for 'ADD PHOTOS & VIDEO' button to trigger upload...")
                             
-                            # CRITICAL: Force Poshmark's React app to recognize the file change
-                            # Dispatch events manually to trigger upload
-                            print(f">>> Dispatching change and input events to trigger upload...")
-                            await file_input.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
-                            await file_input.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
-                            print(f">>> Events dispatched, waiting for visual confirmation (5s timeout)...")
-                            
-                            # Quick visual check: Wait 5 seconds for thumbnail/delete button
-                            quick_visual_check = False
-                            quick_check_timeout = 5  # 5 seconds
-                            quick_check_start = asyncio.get_event_loop().time()
-                            
-                            quick_visual_selectors = [
-                                'button[aria-label="Delete"]',
-                                'button[aria-label="Remove"]',
-                                'button[aria-label*="Delete" i]',
-                                'button[aria-label*="Remove" i]',
-                                '.listing-editor__image-delete-btn',
-                                '[class*="delete-btn"]',
-                                # FIXED: Only check images inside listing editor preview (not general site images)
-                                '.listing-editor__image-preview img',
-                                '[data-test="listing-image"] img',
-                                '[data-test="listing-image"]',
+                            # Try to find and click the visible button/container
+                            add_photos_button = None
+                            button_selectors = [
+                                'button:has-text("ADD PHOTOS & VIDEO")',
+                                'button:has-text("ADD PHOTOS")',
+                                'button:has-text("Add Photos")',
+                                '[role="button"]:has-text("ADD PHOTOS & VIDEO")',
+                                'div[role="button"]:has-text("ADD PHOTOS & VIDEO")',
+                                '.listing-editor__image-upload-container button',
+                                'button[aria-label*="photo" i]',
+                                'button[aria-label*="image" i]',
                             ]
                             
-                            while (asyncio.get_event_loop().time() - quick_check_start) < quick_check_timeout:
-                                for selector in quick_visual_selectors:
-                                    try:
-                                        element = await page.query_selector(selector)
-                                        if element and await element.is_visible():
-                                            print(f">>> ✓ Quick visual confirmation found (selector: {selector})")
-                                            quick_visual_check = True
-                                            break
-                                    except:
-                                        pass
-                                
-                                if quick_visual_check:
-                                    break
-                                await asyncio.sleep(0.3)
+                            for selector in button_selectors:
+                                try:
+                                    add_photos_button = await page.wait_for_selector(selector, timeout=2000, state="visible")
+                                    if add_photos_button:
+                                        print(f">>> ✓ Found 'ADD PHOTOS & VIDEO' button with selector: {selector}")
+                                        break
+                                except:
+                                    continue
                             
-                            # If no visual confirmation in 5 seconds, try drag and drop fallback
-                            if not quick_visual_check:
-                                print(f">>> Standard upload failed to show visual confirmation. Attempting Drag & Drop fallback...")
+                            # If button found, click it to ensure the input is ready
+                            if add_photos_button:
+                                try:
+                                    await add_photos_button.click(timeout=3000)
+                                    print(f">>> Clicked 'ADD PHOTOS & VIDEO' button")
+                                    await asyncio.sleep(0.5)  # Wait for UI to update
+                                except Exception as click_err:
+                                    print(f">>> Warning: Could not click button, continuing with direct input: {click_err}")
+                            
+                            # Now find the file input (may be visible or hidden)
+                            print(f">>> Finding file input element...")
+                            file_input_locator = page.locator('input[type="file"]').first
+                            
+                            try:
+                                # PRIMARY: Use set_input_files on the locator
+                                print(f">>> Attempting file upload via set_input_files...")
+                                await file_input_locator.set_input_files(temp_files)
+                                print(f">>> Set {len(temp_files)} files to input")
                                 
-                                # Find drop zone using PDF-verified exact text: "DROP PHOTOS & VIDEOS HERE TO UPLOAD"
-                                drop_zone_selectors = [
-                                    'div:has-text("DROP PHOTOS & VIDEOS HERE TO UPLOAD")',  # PDF-verified exact text
-                                    'div:has-text("DROP PHOTOS")',                          # Partial match fallback
-                                    '.listing-editor__image-upload-container',               # Primary Poshmark selector
-                                    '[data-test="image-upload-container"]',                 # Data attribute selector
-                                    '.drag-drop-box',                                        # Alternative class
-                                    'div[class*="upload-container"]',                       # Partial class match
-                                    'div[class*="drag-drop"]',                              # Partial class match
-                                    'div[class*="dropzone"]',                               # Partial class match
-                                    'div[class*="drop-zone"]',                              # Partial class match
-                                    'form',                                                  # Form element (often accepts drops)
-                                    'body',                                                  # Last resort - body element
-                                ]
+                                # CRITICAL: Force Poshmark's React app to recognize the file change
+                                # Dispatch events manually to trigger upload
+                                print(f">>> Dispatching change and input events to trigger upload...")
+                                await file_input_locator.evaluate("e => e.dispatchEvent(new Event('change', { bubbles: true }))")
+                                await file_input_locator.evaluate("e => e.dispatchEvent(new Event('input', { bubbles: true }))")
+                                print(f">>> Events dispatched")
                                 
-                                drop_zone_found = None
-                                drop_zone_selector = None
-                                
-                                for selector in drop_zone_selectors:
-                                    try:
-                                        drop_zone_elem = await page.query_selector(selector)
-                                        if drop_zone_elem:
-                                            is_visible = await drop_zone_elem.is_visible()
-                                            if is_visible:
-                                                drop_zone_found = drop_zone_elem
-                                                drop_zone_selector = selector
-                                                print(f">>> Found drop zone: {selector}")
-                                                break
-                                    except:
-                                        pass
-                                
-                                if drop_zone_found:
-                                    # Implement drag and drop using base64 file transfer
-                                    import base64
-                                    import mimetypes
-                                    
-                                    for temp_file in temp_files:
-                                        try:
-                                            file_name = os.path.basename(temp_file)
-                                            # Detect MIME type
-                                            mime_type, _ = mimetypes.guess_type(temp_file)
-                                            if not mime_type:
-                                                mime_type = "image/jpeg"  # Default
-                                            
-                                            # Read file and encode to base64
-                                            with open(temp_file, "rb") as f:
-                                                file_content = base64.b64encode(f.read()).decode("utf-8")
-                                            
-                                            # Inject JS to simulate drop with DataTransfer
-                                            await page.evaluate("""
-                                                async ({selector, fileBase64, fileName, mimeType}) => {
-                                                    const dropZone = document.querySelector(selector);
-                                                    if (!dropZone) {
-                                                        throw new Error(`Drop zone not found: ${selector}`);
-                                                    }
-                                                    
-                                                    // Convert base64 to blob
-                                                    const blob = await fetch(`data:${mimeType};base64,${fileBase64}`).then(r => r.blob());
-                                                    const file = new File([blob], fileName, { type: mimeType });
-                                                    
-                                                    // Create DataTransfer object
-                                                    const dataTransfer = new DataTransfer();
-                                                    dataTransfer.items.add(file);
-                                                    
-                                                    // Dispatch drag events in sequence
-                                                    dropZone.dispatchEvent(new DragEvent('dragenter', {
-                                                        bubbles: true,
-                                                        cancelable: true,
-                                                        dataTransfer: dataTransfer
-                                                    }));
-                                                    
-                                                    dropZone.dispatchEvent(new DragEvent('dragover', {
-                                                        bubbles: true,
-                                                        cancelable: true,
-                                                        dataTransfer: dataTransfer
-                                                    }));
-                                                    
-                                                    // Finally dispatch drop event
-                                                    const dropEvent = new DragEvent('drop', {
-                                                        bubbles: true,
-                                                        cancelable: true,
-                                                        dataTransfer: dataTransfer
-                                                    });
-                                                    dropZone.dispatchEvent(dropEvent);
-                                                    
-                                                    // Also trigger change event on any file input inside
-                                                    const fileInput = dropZone.querySelector('input[type="file"]') || document.querySelector('input[type="file"]');
-                                                    if (fileInput) {
-                                                        fileInput.files = dataTransfer.files;
-                                                        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                                                        fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                                    }
-                                                }
-                                            """, {
-                                                "selector": drop_zone_selector,
-                                                "fileBase64": file_content,
-                                                "fileName": file_name,
-                                                "mimeType": mime_type
-                                            })
-                                            
-                                            print(f">>> Drag and drop event dispatched for {file_name}")
-                                            await asyncio.sleep(0.5)  # Small delay between files
-                                            
-                                        except Exception as file_error:
-                                            print(f">>> ⚠ Failed to drag and drop {os.path.basename(temp_file)}: {file_error}")
-                                    
-                                    print(f">>> Drag and drop fallback completed, waiting for confirmation...")
-                                    await asyncio.sleep(1)  # Wait for processing
-                                else:
-                                    print(f">>> ⚠ Could not find drop zone for drag and drop fallback")
+                            except Exception as upload_err:
+                                print(f">>> ⚠ Direct set_input_files failed: {upload_err}")
+                                # Fallback: Try to get the element handle and set files directly
+                                try:
+                                    file_input_elem = await page.query_selector('input[type="file"]')
+                                    if file_input_elem:
+                                        await file_input_elem.set_input_files(temp_files)
+                                        print(f">>> Set files via element handle fallback")
+                                except Exception as fallback_err:
+                                    print(f">>> ⚠ Fallback also failed: {fallback_err}")
+                                    raise PoshmarkPublishError(f"Failed to upload images: {upload_err}")
                             
                             # PRIMARY: Wait for network response - the "real" confirmation
                             # This is more reliable than visual checks
@@ -984,82 +887,95 @@ async def publish_listing_to_poshmark(
         # PDF-VERIFIED: First, try to find input using "Listing Price" text label (most reliable)
         print(f">>> Searching for listing price field using 'Listing Price' text (PDF-verified)...")
         try:
-            # Use JavaScript to find the input associated with "Listing Price" text
-            price_field_selector = await page.evaluate("""
-                () => {
-                    // Find element containing "Listing Price" text
-                    const allElements = Array.from(document.querySelectorAll('*'));
-                    let listingPriceElement = null;
-                    
-                    for (const el of allElements) {
-                        const text = (el.textContent || el.innerText || '').trim();
-                        if (text === 'Listing Price' || text.includes('Listing Price')) {
-                            listingPriceElement = el;
-                            break;
-                        }
-                    }
-                    
-                    if (!listingPriceElement) {
-                        return null;
-                    }
-                    
-                    // Find input in the same parent container or nearby
-                    let parent = listingPriceElement.parentElement;
-                    let attempts = 0;
-                    while (parent && attempts < 5) {
-                        // Look for input in this parent
-                        const input = parent.querySelector('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]');
-                        if (input) {
-                            // Verify it's not original price
-                            const dataVvName = (input.getAttribute('data-vv-name') || '').toLowerCase();
-                            const name = (input.name || '').toLowerCase();
-                            const id = (input.id || '').toLowerCase();
-                            if (!dataVvName.includes('original') && !name.includes('original') && !id.includes('original')) {
-                                // Generate a unique selector for this input
-                                if (input.id) {
-                                    return `input#${input.id}`;
-                                } else if (input.getAttribute('data-vv-name')) {
-                                    return `input[data-vv-name="${input.getAttribute('data-vv-name')}"]`;
-                                } else if (input.name) {
-                                    return `input[name="${input.name}"]`;
-                                } else {
-                                    // Use nth-of-type as fallback
-                                    const inputs = Array.from(parent.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"]'));
-                                    const index = inputs.indexOf(input);
-                                    return `input[type="${input.type}"]:nth-of-type(${index + 1})`;
-                                }
-                            }
-                        }
-                        parent = parent.parentElement;
-                        attempts++;
-                    }
-                    return null;
-                }
-            """)
+            # Use Playwright's locator API to find the element with "Listing Price" text
+            listing_price_label = page.locator('text=Listing Price').first
             
-            if price_field_selector:
-                print(f">>> Found price field selector via 'Listing Price' text: {price_field_selector}")
+            # Check if the label exists
+            try:
+                await listing_price_label.wait_for(state="attached", timeout=3000)
+                print(f">>> ✓ Found 'Listing Price' label")
+                
+                # Find the input field relative to the label using XPath
+                # Try multiple strategies to find the associated input
+                price_field_locator = None
+                
+                # Strategy 1: Input in the same parent container
                 try:
-                    price_field = await page.wait_for_selector(price_field_selector, timeout=3000, state="visible")
-                    if price_field:
-                        is_visible = await price_field.is_visible()
-                        is_enabled = await price_field.is_enabled()
+                    price_field_locator = listing_price_label.locator('xpath=following-sibling::*//input[(@type="number" or @type="text") and not(contains(@data-vv-name, "original"))]').first
+                    await price_field_locator.wait_for(state="attached", timeout=1000)
+                    print(f">>> ✓ Found price input via following-sibling XPath")
+                except:
+                    # Strategy 2: Input in parent container
+                    try:
+                        price_field_locator = listing_price_label.locator('xpath=ancestor::*[1]//input[(@type="number" or @type="text") and not(contains(@data-vv-name, "original"))]').first
+                        await price_field_locator.wait_for(state="attached", timeout=1000)
+                        print(f">>> ✓ Found price input via ancestor XPath")
+                    except:
+                        # Strategy 3: Use JavaScript to find input near the label
+                        price_field_selector = await listing_price_label.evaluate("""
+                            (label) => {
+                                let parent = label.parentElement;
+                                let attempts = 0;
+                                while (parent && attempts < 5) {
+                                    const input = parent.querySelector('input[type="number"], input[type="text"][inputmode="numeric"]');
+                                    if (input) {
+                                        const dataVvName = (input.getAttribute('data-vv-name') || '').toLowerCase();
+                                        const name = (input.name || '').toLowerCase();
+                                        const id = (input.id || '').toLowerCase();
+                                        if (!dataVvName.includes('original') && !name.includes('original') && !id.includes('original')) {
+                                            if (input.id) return `input#${input.id}`;
+                                            if (input.getAttribute('data-vv-name')) return `input[data-vv-name="${input.getAttribute('data-vv-name')}"]`;
+                                            if (input.name) return `input[name="${input.name}"]`;
+                                        }
+                                    }
+                                    parent = parent.parentElement;
+                                    attempts++;
+                                }
+                                return null;
+                            }
+                        """)
+                        
+                        if price_field_selector:
+                            print(f">>> Found price field selector via JS: {price_field_selector}")
+                            price_field_locator = page.locator(price_field_selector).first
+                
+                if price_field_locator:
+                    try:
+                        await price_field_locator.wait_for(state="visible", timeout=2000)
+                        is_visible = await price_field_locator.is_visible()
+                        is_enabled = await price_field_locator.is_enabled()
+                        
                         if is_visible and is_enabled:
-                            await price_field.click(force=True)
+                            # Scroll into view
+                            await price_field_locator.scroll_into_view_if_needed()
                             await asyncio.sleep(0.2)
-                            await price_field.fill("")
+                            
+                            # Click and fill
+                            await price_field_locator.click(force=True)
+                            await asyncio.sleep(0.2)
+                            await price_field_locator.fill("")
                             await asyncio.sleep(0.1)
-                            await price_field.type(price, delay=50)
+                            await price_field_locator.type(price, delay=50)
                             await asyncio.sleep(0.2)
                             await page.keyboard.press('Tab')
                             await asyncio.sleep(0.2)
                             
-                            filled_value = await price_field.input_value()
-                            if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                            filled_value = await price_field_locator.input_value()
+                            # Clean comparison (remove dots, commas, dollar signs)
+                            clean_filled = filled_value.replace(".", "").replace(",", "").replace("$", "").strip()
+                            clean_price = price.replace(".", "").replace(",", "").replace("$", "").strip()
+                            
+                            if filled_value == price or clean_filled == clean_price:
                                 print(f">>> ✓ Filled listing price using 'Listing Price' text label, value: {filled_value}")
                                 price_filled = True
-                except Exception as e:
-                    print(f">>> Failed to fill price via 'Listing Price' label selector: {e}")
+                            else:
+                                print(f">>> Warning: Price value mismatch. Expected: {price}, Got: {filled_value}")
+                    except Exception as e:
+                        print(f">>> Failed to fill price via locator: {e}")
+                else:
+                    print(f">>> Could not find input field relative to 'Listing Price' label")
+            except Exception as e:
+                print(f">>> 'Listing Price' label not found: {e}")
         except Exception as e:
             print(f">>> Could not find price via 'Listing Price' text: {e}")
         
