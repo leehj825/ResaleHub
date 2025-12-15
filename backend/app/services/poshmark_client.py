@@ -547,81 +547,76 @@ async def publish_listing_to_poshmark(
                             await file_input.set_input_files(temp_files)
                             print(f">>> Set {len(temp_files)} files to input")
                             
-                            # CRITICAL: Wait for image thumbnail to render before proceeding
-                            print(f">>> Waiting for image thumbnail to render...")
-                            image_rendered = False
-                            max_wait_time = 15  # Allow up to 15 seconds for image processing
+                            # CRITICAL: Wait for Delete button to appear - this confirms Poshmark has accepted the file
+                            # Not just that the browser rendered a local preview
+                            print(f">>> Waiting for Poshmark to process images (checking for Delete button)...")
+                            delete_button_found = False
+                            max_wait_time = 20  # Allow up to 20 seconds for Poshmark to process
                             wait_start = asyncio.get_event_loop().time()
                             
-                            # Try multiple selectors for image thumbnail/preview
-                            thumbnail_selectors = [
-                                '.listing-editor__image-preview',
-                                '[class*="image-preview"]',
-                                '[class*="photo-preview"]',
-                                '[class*="upload-preview"]',
-                                'img[src*="data:image"]',  # Base64 preview
+                            # Primary selectors: Look specifically for Delete/Remove buttons
+                            delete_button_selectors = [
+                                'button[aria-label="Delete"]',
+                                'button[aria-label="Remove"]',
                                 'button[aria-label*="Delete" i]',
                                 'button[aria-label*="Remove" i]',
-                                '[data-test*="image"]',
-                                '[data-test*="photo"]',
+                                '.listing-editor__image-delete-btn',
+                                '[class*="delete-btn"]',
+                                '[class*="remove-btn"]',
                             ]
                             
                             while (asyncio.get_event_loop().time() - wait_start) < max_wait_time:
-                                # Check if any thumbnail indicators are visible
-                                for selector in thumbnail_selectors:
+                                # Check for Delete button specifically
+                                for selector in delete_button_selectors:
                                     try:
-                                        thumbnail = await page.query_selector(selector)
-                                        if thumbnail:
-                                            is_visible = await thumbnail.is_visible()
+                                        delete_btn = await page.query_selector(selector)
+                                        if delete_btn:
+                                            is_visible = await delete_btn.is_visible()
                                             if is_visible:
-                                                print(f">>> ✓ Image thumbnail rendered (found with selector: {selector})")
-                                                image_rendered = True
+                                                print(f">>> ✓ Delete button found (selector: {selector}) - Poshmark has accepted the image")
+                                                delete_button_found = True
                                                 break
                                     except:
                                         pass
                                 
-                                if image_rendered:
+                                if delete_button_found:
                                     break
                                 
-                                # Also check via JavaScript for image preview elements
+                                # Also check via JavaScript for Delete buttons
                                 try:
-                                    has_thumbnail = await page.evaluate("""
+                                    has_delete_button = await page.evaluate("""
                                         () => {
-                                            // Check for image preview containers
-                                            const previews = document.querySelectorAll('[class*="preview"], [class*="thumbnail"], [class*="image"]');
-                                            for (const preview of previews) {
-                                                if (preview.offsetWidth > 0 && preview.offsetHeight > 0) {
-                                                    // Check if it contains an image or delete button
-                                                    if (preview.querySelector('img') || preview.querySelector('button[aria-label*="Delete" i]')) {
-                                                        return true;
-                                                    }
-                                                }
-                                            }
-                                            // Check for delete/remove buttons on images
-                                            const deleteButtons = document.querySelectorAll('button[aria-label*="Delete" i], button[aria-label*="Remove" i]');
+                                            // Check for delete/remove buttons - these only appear after Poshmark processes the image
+                                            const deleteButtons = document.querySelectorAll(
+                                                'button[aria-label="Delete"], button[aria-label="Remove"], ' +
+                                                'button[aria-label*="Delete" i], button[aria-label*="Remove" i], ' +
+                                                '[class*="delete-btn"], [class*="remove-btn"]'
+                                            );
                                             for (const btn of deleteButtons) {
-                                                if (btn.offsetParent !== null) {
+                                                if (btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0) {
                                                     return true;
                                                 }
                                             }
                                             return false;
                                         }
                                     """)
-                                    if has_thumbnail:
-                                        print(f">>> ✓ Image thumbnail rendered (detected via JavaScript)")
-                                        image_rendered = True
+                                    if has_delete_button:
+                                        print(f">>> ✓ Delete button found (via JavaScript) - Poshmark has accepted the image")
+                                        delete_button_found = True
                                         break
                                 except:
                                     pass
                                 
                                 await asyncio.sleep(0.5)
                             
-                            if not image_rendered:
-                                print(f">>> ⚠ Warning: Image thumbnail not detected after {max_wait_time}s, but proceeding...")
+                            if not delete_button_found:
+                                error_msg = f"Poshmark did not process images after {max_wait_time}s. Delete button not found. Images may not have been uploaded correctly."
+                                print(f">>> ✗ ERROR: {error_msg}")
+                                raise PoshmarkPublishError(error_msg)
                             else:
                                 # Additional wait to ensure image is fully processed
                                 await asyncio.sleep(1)
-                                print(f">>> ✓ Uploaded {len(temp_files)} images and confirmed rendering")
+                                print(f">>> ✓ Uploaded {len(temp_files)} images - Poshmark processing confirmed")
                         finally:
                             for temp_file in temp_files:
                                 try:
@@ -687,56 +682,106 @@ async def publish_listing_to_poshmark(
         
         price_filled = False
         
-        # First, try to find price field using JavaScript (more reliable for dynamic forms)
-        print(f">>> Searching for price field using JavaScript...")
-        try:
-            price_field_info = await page.evaluate("""
-                () => {
-                    const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
-                    for (const inp of inputs) {
-                        const placeholder = (inp.placeholder || '').toLowerCase();
-                        const name = (inp.name || '').toLowerCase();
-                        const id = (inp.id || '').toLowerCase();
-                        const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
-                        const ariaLabel = (inp.getAttribute('aria-label') || '').toLowerCase();
-                        
-                        // Get parent label text
-                        const label = inp.closest('label')?.textContent?.toLowerCase() || '';
-                        const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
-                        
-                        // Skip originalPrice field - we want the listing price
-                        if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {
-                            continue;
+        # First, try direct ID/name selectors for listing price (most reliable)
+        print(f">>> Searching for listing price field (Listing Price, not Original Price)...")
+        direct_price_selectors = [
+            'input#price',
+            'input[name="price"]',
+            'input[id="price"]',
+            'input[data-vv-name="price"]',
+            'input[data-vv-name="list_price"]',
+            'input[data-vv-name="selling_price"]',
+            'input[data-vv-name="current_price"]',
+        ]
+        
+        for selector in direct_price_selectors:
+            try:
+                price_field = await page.query_selector(selector)
+                if price_field:
+                    # Double-check it's not originalPrice
+                    data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                    name_attr = await price_field.get_attribute("name") or ""
+                    id_attr = await price_field.get_attribute("id") or ""
+                    
+                    if "original" not in data_vv_name.lower() and "original" not in name_attr.lower() and "original" not in id_attr.lower():
+                        is_visible = await price_field.is_visible()
+                        is_enabled = await price_field.is_enabled()
+                        if is_visible and is_enabled:
+                            try:
+                                # Use force=True to avoid modal interception
+                                await price_field.click(force=True)
+                                await asyncio.sleep(0.2)
+                                await price_field.fill("")
+                                await asyncio.sleep(0.1)
+                                await price_field.type(price, delay=50)
+                                await asyncio.sleep(0.2)
+                                await page.keyboard.press('Tab')
+                                await asyncio.sleep(0.2)
+                                
+                                filled_value = await price_field.input_value()
+                                if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
+                                    print(f">>> ✓ Filled listing price with direct selector: {selector}, value: {filled_value}")
+                                    price_filled = True
+                                    break
+                            except Exception as e:
+                                print(f">>> Direct price selector {selector} failed: {e}")
+                                continue
+            except:
+                continue
+        
+        # If direct selectors didn't work, try JavaScript search (more reliable for dynamic forms)
+        if not price_filled:
+            print(f">>> Searching for price field using JavaScript...")
+            try:
+                price_field_info = await page.evaluate("""
+                    () => {
+                        const inputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="[0-9]"]'));
+                        for (const inp of inputs) {
+                            const placeholder = (inp.placeholder || '').toLowerCase();
+                            const name = (inp.name || '').toLowerCase();
+                            const id = (inp.id || '').toLowerCase();
+                            const dataVvName = (inp.getAttribute('data-vv-name') || '').toLowerCase();
+                            const ariaLabel = (inp.getAttribute('aria-label') || '').toLowerCase();
+                            
+                            // Get parent label text
+                            const label = inp.closest('label')?.textContent?.toLowerCase() || '';
+                            const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
+                            
+                            // STRICT: Skip originalPrice field - we ONLY want the listing/selling price
+                            if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original') || 
+                                id.includes('original') || ariaLabel.includes('original')) {
+                                continue;
+                            }
+                            
+                            // Look for listing price indicators (selling price, list price, NOT original)
+                            const isPriceField = (
+                                (id === 'price' || name === 'price' || dataVvName === 'price') ||
+                                (placeholder.includes('price') && !placeholder.includes('original')) || 
+                                (name.includes('price') && !name.includes('original')) || 
+                                (id.includes('price') && !id.includes('original')) || 
+                                (label.includes('price') && !label.includes('original')) ||
+                                parentText.includes('list price') ||
+                                parentText.includes('selling price') ||
+                                (dataVvName && dataVvName.includes('price') && !dataVvName.includes('original'))
+                            );
+                            
+                            if (isPriceField) {
+                                const rect = inp.getBoundingClientRect();
+                                return {
+                                    found: true,
+                                    selector: `input[data-vv-name="${inp.getAttribute('data-vv-name')}"], input[placeholder="${inp.placeholder}"], input[type="${inp.type}"][inputmode="${inp.inputMode || ''}"]`,
+                                    dataVvName: inp.getAttribute('data-vv-name'),
+                                    placeholder: inp.placeholder,
+                                    name: inp.name,
+                                    id: inp.id,
+                                    visible: rect.width > 0 && rect.height > 0,
+                                    value: inp.value
+                                };
+                            }
                         }
-                        
-                        // Look for listing price indicators
-                        const isPriceField = (
-                            placeholder.includes('price') || 
-                            name.includes('price') || 
-                            id.includes('price') || 
-                            label.includes('price') ||
-                            parentText.includes('list price') ||
-                            parentText.includes('selling price') ||
-                            (placeholder === '*required' && !dataVvName.includes('original')) ||
-                            (dataVvName && dataVvName.includes('price') && !dataVvName.includes('original'))
-                        );
-                        
-                        if (isPriceField) {
-                            const rect = inp.getBoundingClientRect();
-                            return {
-                                found: true,
-                                selector: `input[data-vv-name="${inp.getAttribute('data-vv-name')}"], input[placeholder="${inp.placeholder}"], input[type="${inp.type}"][inputmode="${inp.inputMode || ''}"]`,
-                                dataVvName: inp.getAttribute('data-vv-name'),
-                                placeholder: inp.placeholder,
-                                name: inp.name,
-                                visible: rect.width > 0 && rect.height > 0,
-                                value: inp.value
-                            };
-                        }
+                        return { found: false };
                     }
-                    return { found: false };
-                }
-            """)
+                """)
             
             if price_field_info.get('found'):
                 print(f">>> Found potential price field: {price_field_info}")
@@ -758,9 +803,18 @@ async def publish_listing_to_poshmark(
                         try:
                             price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
                             if price_field:
-                                # Check it's not originalPrice
-                                data_vv_name = await price_field.get_attribute("data-vv-name")
-                                if data_vv_name and "original" in data_vv_name.lower():
+                                # STRICT: Check it's not originalPrice
+                                data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                                name_attr = await price_field.get_attribute("name") or ""
+                                id_attr = await price_field.get_attribute("id") or ""
+                                
+                                if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
+                                    continue
+                                
+                                # Check if field is actually visible and enabled
+                                is_visible = await price_field.is_visible()
+                                is_enabled = await price_field.is_enabled()
+                                if not (is_visible and is_enabled):
                                     continue
                                 
                                 # Handle modals before clicking
@@ -770,12 +824,12 @@ async def publish_listing_to_poshmark(
                                 await price_field.scroll_into_view_if_needed()
                                 await asyncio.sleep(0.3)
                                 
-                                # Clear and fill - use force=True to bypass modal interception
+                                # ALWAYS use force=True to bypass modal interception
                                 try:
                                     await price_field.click(force=True)
                                 except Exception as click_err:
                                     if "intercepts pointer events" in str(click_err):
-                                        print(f">>> Modal intercepted price click, handling modals and retrying...")
+                                        print(f">>> Modal intercepted price click, handling modals and retrying with force=True...")
                                         await handle_modals(page)
                                         await price_field.click(force=True)
                                 
@@ -794,10 +848,11 @@ async def publish_listing_to_poshmark(
                                 # Verify it was filled
                                 filled_value = await price_field.input_value()
                                 if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                                    print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
+                                    print(f">>> ✓ Filled listing price with selector: {selector}, value: {filled_value}")
                                     price_filled = True
                                     break
-                        except:
+                        except Exception as e:
+                            print(f">>> Price field attempt failed with {selector}: {e}")
                             continue
                 except Exception as e:
                     print(f">>> Could not fill found price field: {e}")
@@ -821,9 +876,12 @@ async def publish_listing_to_poshmark(
                 try:
                     price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
                     if price_field:
-                        # Double-check it's not originalPrice
-                        data_vv_name = await price_field.get_attribute("data-vv-name")
-                        if data_vv_name and "original" in data_vv_name.lower():
+                        # STRICT: Double-check it's not originalPrice
+                        data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                        name_attr = await price_field.get_attribute("name") or ""
+                        id_attr = await price_field.get_attribute("id") or ""
+                        
+                        if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
                             continue
                         
                         # Check if field is actually visible and enabled
@@ -837,12 +895,12 @@ async def publish_listing_to_poshmark(
                             await price_field.scroll_into_view_if_needed()
                             await asyncio.sleep(0.3)
                             
-                            # Clear and fill - use force=True to bypass modal interception
+                            # ALWAYS use force=True to bypass modal interception
                             try:
                                 await price_field.click(force=True)
                             except Exception as click_err:
                                 if "intercepts pointer events" in str(click_err):
-                                    print(f">>> Modal intercepted price click, handling modals and retrying...")
+                                    print(f">>> Modal intercepted price click, handling modals and retrying with force=True...")
                                     await handle_modals(page)
                                     await price_field.click(force=True)
                             
@@ -861,7 +919,7 @@ async def publish_listing_to_poshmark(
                             # Verify it was filled
                             filled_value = await price_field.input_value()
                             if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                                print(f">>> ✓ Filled price with selector: {selector}, value: {filled_value}")
+                                print(f">>> ✓ Filled listing price with selector: {selector}, value: {filled_value}")
                                 price_filled = True
                                 break
                 except Exception as e:
@@ -1099,20 +1157,21 @@ async def publish_listing_to_poshmark(
                             const label = inp.closest('label')?.textContent?.toLowerCase() || '';
                             const parentText = inp.closest('div, section')?.textContent?.toLowerCase() || '';
                             
-                            // Skip originalPrice
-                            if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original')) {
+                            // STRICT: Skip originalPrice field - we ONLY want the listing/selling price
+                            if (dataVvName.includes('original') || name.includes('original') || placeholder.includes('original') || 
+                                id.includes('original') || ariaLabel.includes('original')) {
                                 continue;
                             }
                             
-                            // Look for listing price
+                            // Look for listing price (selling price, list price, NOT original)
                             const isPriceField = (
-                                placeholder.includes('price') || 
-                                name.includes('price') || 
-                                id.includes('price') || 
-                                label.includes('price') ||
+                                (id === 'price' || name === 'price' || dataVvName === 'price') ||
+                                (placeholder.includes('price') && !placeholder.includes('original')) || 
+                                (name.includes('price') && !name.includes('original')) || 
+                                (id.includes('price') && !id.includes('original')) || 
+                                (label.includes('price') && !label.includes('original')) ||
                                 parentText.includes('list price') ||
                                 parentText.includes('selling price') ||
-                                (placeholder === '*required' && !dataVvName.includes('original')) ||
                                 (dataVvName && dataVvName.includes('price') && !dataVvName.includes('original'))
                             );
                             
@@ -1149,9 +1208,12 @@ async def publish_listing_to_poshmark(
                         try:
                             price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
                             if price_field:
-                                # Double-check it's not originalPrice
-                                data_vv_name = await price_field.get_attribute("data-vv-name")
-                                if data_vv_name and "original" in data_vv_name.lower():
+                                # STRICT: Double-check it's not originalPrice
+                                data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                                name_attr = await price_field.get_attribute("name") or ""
+                                id_attr = await price_field.get_attribute("id") or ""
+                                
+                                if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
                                     continue
                                 
                                 is_visible = await price_field.is_visible()
@@ -1163,23 +1225,26 @@ async def publish_listing_to_poshmark(
                                     await price_field.scroll_into_view_if_needed()
                                     await asyncio.sleep(0.5)
                                     
-                                    # Use force=True to bypass modal interception
+                                    # ALWAYS use force=True to bypass modal interception
                                     try:
                                         await price_field.click(force=True)
                                     except Exception as click_err:
                                         if "intercepts pointer events" in str(click_err):
-                                            print(f">>> Modal intercepted price click on next step, handling modals and retrying...")
+                                            print(f">>> Modal intercepted price click on next step, handling modals and retrying with force=True...")
                                             await handle_modals(page)
                                             await price_field.click(force=True)
                                     
                                     await price_field.fill("")
                                     await asyncio.sleep(0.3)
-                                    await price_field.fill(price)
+                                    # Type instead of fill to trigger React validation
+                                    await price_field.type(price, delay=50)
                                     await asyncio.sleep(0.3)
+                                    await page.keyboard.press('Tab')
+                                    await asyncio.sleep(0.2)
                                     
                                     filled_value = await price_field.input_value()
                                     if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                                        print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
+                                        print(f">>> ✓ Filled listing price on next step with selector: {selector}, value: {filled_value}")
                                         price_filled = True
                                         break
                         except:
@@ -1204,9 +1269,12 @@ async def publish_listing_to_poshmark(
                     try:
                         price_field = await page.wait_for_selector(selector, timeout=2000, state="attached")
                         if price_field:
-                            # Double-check it's not originalPrice
-                            data_vv_name = await price_field.get_attribute("data-vv-name")
-                            if data_vv_name and "original" in data_vv_name.lower():
+                            # STRICT: Double-check it's not originalPrice
+                            data_vv_name = await price_field.get_attribute("data-vv-name") or ""
+                            name_attr = await price_field.get_attribute("name") or ""
+                            id_attr = await price_field.get_attribute("id") or ""
+                            
+                            if "original" in data_vv_name.lower() or "original" in name_attr.lower() or "original" in id_attr.lower():
                                 continue
                             
                             is_visible = await price_field.is_visible()
@@ -1218,12 +1286,12 @@ async def publish_listing_to_poshmark(
                                 await price_field.scroll_into_view_if_needed()
                                 await asyncio.sleep(0.5)
                                 
-                                # Use force=True to bypass modal interception
+                                # ALWAYS use force=True to bypass modal interception
                                 try:
                                     await price_field.click(force=True)
                                 except Exception as click_err:
                                     if "intercepts pointer events" in str(click_err):
-                                        print(f">>> Modal intercepted price click on next step, handling modals and retrying...")
+                                        print(f">>> Modal intercepted price click on next step, handling modals and retrying with force=True...")
                                         await handle_modals(page)
                                         await price_field.click(force=True)
                                 
@@ -1241,7 +1309,7 @@ async def publish_listing_to_poshmark(
                                 
                                 filled_value = await price_field.input_value()
                                 if filled_value == price or filled_value.replace(".", "").replace(",", "") == price.replace(".", "").replace(",", ""):
-                                    print(f">>> ✓ Filled price on next step with selector: {selector}, value: {filled_value}")
+                                    print(f">>> ✓ Filled listing price on next step with selector: {selector}, value: {filled_value}")
                                     price_filled = True
                                     break
                     except:
@@ -1947,13 +2015,24 @@ async def publish_listing(
                         screenshot_base64=screenshot_base64
                     )
                 
-                # 5. 리스팅 업로드 수행
-                result = await publish_listing_to_poshmark(
-                    page, listing, listing_images, base_url, settings, job_id, progress_tracker
-                )
-                
-                log(f"✓ Publish successful! Total time: {time.time() - start_time:.1f}s", "success")
-                return result
+                # 5. 리스팅 업로드 수행 (with strict timeout to prevent zombie processes)
+                try:
+                    result = await asyncio.wait_for(
+                        publish_listing_to_poshmark(
+                            page, listing, listing_images, base_url, settings, job_id, progress_tracker
+                        ),
+                        timeout=180.0  # 3 minute hard limit
+                    )
+                    log(f"✓ Publish successful! Total time: {time.time() - start_time:.1f}s", "success")
+                    return result
+                except asyncio.TimeoutError:
+                    log(f"✗ Publish timed out after 180 seconds - killing process", level="error")
+                    # Explicitly close browser to prevent zombie process
+                    try:
+                        await browser.close()
+                    except:
+                        pass
+                    raise PoshmarkPublishError("Publish operation timed out after 3 minutes. The operation may have gotten stuck. Please try again.")
                 
             finally:
                 log("Closing browser...", emit_to_frontend=False)
